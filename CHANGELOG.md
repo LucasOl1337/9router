@@ -1,3 +1,10 @@
+# v0.5.60 (2026-09-02)
+
+## Fixes
+- **SSE**: omitted `stream` field now defaults to JSON. Explicit `stream:true`,
+  explicit `stream:false`, `Accept: text/event-stream`, source-required formats
+  (Antigravity/Gemini/Gemini-CLI) and the `forceStream` aggregator are unchanged.
+
 # v0.5.59 (2026-08-29)
 
 ## Features
