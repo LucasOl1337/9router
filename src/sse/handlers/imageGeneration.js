@@ -90,7 +90,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
-  const fallbackProviderId = AI_PROVIDERS[provider]?.credentialFallback;
+  const fallbackProviderId = AI_PROVIDERS[provider]?.imageConfig?.credentialFallback;
 
   while (true) {
     let credentialProviderId = provider;

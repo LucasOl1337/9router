@@ -39,9 +39,14 @@ vi.mock("@/sse/utils/logger.js", () => ({
   warn: vi.fn(),
   error: vi.fn(),
   debug: vi.fn(),
+  request: vi.fn(),
+  response: vi.fn(),
+  stream: vi.fn(),
+  maskKey: vi.fn(() => "***"),
 }));
 
 import { handleImageGeneration } from "@/sse/handlers/imageGeneration.js";
+import { handleSearch } from "@/sse/handlers/search.js";
 import { buildModelsList } from "@/app/api/v1/models/route.js";
 
 const originalFetch = global.fetch;
@@ -173,6 +178,28 @@ describe("handleImageGeneration xai credentialFallback", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error?.message || body.error || JSON.stringify(body)).toMatch(/No credentials for provider: xai/);
+  });
+});
+
+describe("xai web search without grok-cli fallback", () => {
+  it("does not spend grok-cli credentials on POST /v1/search", async () => {
+    authMocks.getProviderCredentials.mockImplementation(async (provider) => {
+      if (provider === "grok-cli") return grokCliAccount();
+      return null;
+    });
+
+    const res = await handleSearch(
+      new Request("http://localhost/v1/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "xai", query: "latest grok news" }),
+      })
+    );
+
+    expect(res.status).toBe(400);
+    expect(global.fetch).not.toHaveBeenCalled();
+    const calledProviders = authMocks.getProviderCredentials.mock.calls.map((c) => c[0]);
+    expect(calledProviders).not.toContain("grok-cli");
   });
 });
 

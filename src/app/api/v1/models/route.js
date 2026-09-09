@@ -302,7 +302,7 @@ export async function buildModelsList(kindFilter, options = {}) {
     for (const [providerId, provider] of Object.entries(AI_PROVIDERS)) {
       if (activeConnectionByProvider.has(providerId)) continue;
       if (!providerMatchesKinds(providerId, fallbackKinds)) continue;
-      const fallbackId = provider.credentialFallback;
+      const fallbackId = provider.imageConfig?.credentialFallback;
       if (!fallbackId || !activeConnectionByProvider.has(fallbackId)) continue;
       const fallbackConn = activeConnectionByProvider.get(fallbackId);
       activeConnectionByProvider.set(providerId, {
