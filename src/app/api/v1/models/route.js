@@ -136,6 +136,10 @@ const INTERNAL_MODELS_FETCH_HEADER = "x-9r-internal-models-fetch";
 // LLM kind sentinel — combos/models with no explicit kind default to LLM
 const LLM_KIND = "llm";
 
+// Kinds where a provider may be listed through another provider's credentials
+// (`credentialFallback`), e.g. xai image reusing the grok-cli connection.
+const CREDENTIAL_FALLBACK_KINDS = ["image"];
+
 // Map per-model `type` field (in PROVIDER_MODELS) to service kind.
 // Models without `type` are treated as LLM.
 const MODEL_TYPE_TO_KIND = {
@@ -287,6 +291,29 @@ export async function buildModelsList(kindFilter, options = {}) {
   for (const conn of connections) {
     if (!activeConnectionByProvider.has(conn.provider)) {
       activeConnectionByProvider.set(conn.provider, conn);
+    }
+  }
+
+  // credentialFallback (e.g. xai → grok-cli): list media models when the
+  // fallback provider is connected, without cloning tokens into a new row.
+  // Media catalogs only — chat/search keep requiring their own connection.
+  const fallbackKinds = kindFilter.filter((k) => CREDENTIAL_FALLBACK_KINDS.includes(k));
+  if (connections.length > 0 && fallbackKinds.length > 0) {
+    for (const [providerId, provider] of Object.entries(AI_PROVIDERS)) {
+      if (activeConnectionByProvider.has(providerId)) continue;
+      if (!providerMatchesKinds(providerId, fallbackKinds)) continue;
+      const fallbackId = provider.imageConfig?.credentialFallback;
+      if (!fallbackId || !activeConnectionByProvider.has(fallbackId)) continue;
+      const fallbackConn = activeConnectionByProvider.get(fallbackId);
+      activeConnectionByProvider.set(providerId, {
+        ...fallbackConn,
+        provider: providerId,
+        providerSpecificData: {
+          ...(fallbackConn.providerSpecificData || {}),
+          prefix: undefined,
+          enabledModels: undefined,
+        },
+      });
     }
   }
 

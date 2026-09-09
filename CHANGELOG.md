@@ -1,3 +1,9 @@
+# Unreleased
+
+## Features
+- **Image**: publish xAI Imagine (`xai/grok-imagine-image`, `xai/grok-imagine-image-2.0`) and reuse grok-cli OAuth via `imageConfig.credentialFallback` when there is no xai connection (image catalog and `POST /v1/images/generations` only — web search is unchanged). Forward `aspect_ratio` / `resolution` / `quality` on the xAI image body for the Imagine models only; `aspect_ratio` is derived from a caller-supplied `size` and otherwise left to xAI.
+- **Image**: add `cx/gpt-image-2` and stop sending that slug as a ChatGPT Codex chat model (map to a supported chat model + `image_generation` tool).
+
 # v0.5.60 (2026-09-02)
 
 ## Fixes

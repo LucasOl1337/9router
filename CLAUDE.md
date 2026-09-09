@@ -89,3 +89,8 @@ Pre-translate hooks that compress `tool_result` content in-place to cut tokens. 
 - Security-sensitive env: `JWT_SECRET` (session cookie), `INITIAL_PASSWORD` (default `123456` — must override), `API_KEY_SECRET`, `MACHINE_ID_SALT`. Full env contract in `.env.example` and ARCHITECTURE.md's env matrix.
 - Binary/protobuf upstreams (kiro EventStream, cursor protobuf, commandcode NDJSON) don't round-trip through OpenAI — they're handled inside their own executor, not the translator.
 - Versioning: root and `cli/` are versioned independently; changes are logged in `CHANGELOG.md`. Commit style is Conventional Commits (`fix(translator): …`, `feat(...)`).
+
+### Image generation IDs
+- xAI Imagine: `xai/grok-imagine-image` and `xai/grok-imagine-image-2.0` in `open-sse/providers/registry/xai.js`. Image requests reuse `grok-cli` OAuth via `imageConfig.credentialFallback` when there is no `xai` sqlite row — the models catalog (`src/app/api/v1/models/route.js`) and `src/sse/handlers/imageGeneration.js` are its only readers, so the fallback stays image-only and `/v1/search` still requires its own xai connection. Do not clone grok-cli tokens into an xai connection, and do not move the key to the provider root (`search.js` reads that one).
+- `imageConfig.bodyFields` is provider-wide; each extra field is opt-in per model via its `params` (`open-sse/handlers/imageProviders/openai.js`). Unknown/custom ids default closed to `model`/`prompt`/`n`/`response_format` — api.x.ai rejects extra fields.
+- Codex ChatGPT: `cx/gpt-image-2` is a dedicated image slug, not a Responses API chat model. Mapping lives in `open-sse/handlers/imageProviders/codex.js`. `cx/gpt-5.5-image` still strips to chat `gpt-5.5`.

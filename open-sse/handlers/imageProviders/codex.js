@@ -8,7 +8,9 @@ const CODEX_USER_AGENT = "codex_cli_rs/0.136.0";
 const CODEX_VERSION = "0.136.0";
 const CODEX_ORIGINATOR = "codex_cli_rs";
 const CODEX_MODEL_SUFFIX = "-image";
+const CODEX_DEDICATED_IMAGE_MODEL = "gpt-image-2";
 const CODEX_REF_DETAIL = "high";
+const CODEX_IMAGE_CHAT_MODEL = "gpt-5.5";
 
 function decodeAccountId(idToken) {
   try {
@@ -23,7 +25,15 @@ function decodeAccountId(idToken) {
   }
 }
 
-function stripImageSuffix(model) {
+function isDedicatedImageModel(model) {
+  return model === CODEX_DEDICATED_IMAGE_MODEL;
+}
+
+// ChatGPT Codex Responses API rejects dedicated image slugs (gpt-image-2) as
+// the top-level `model`. Map those to a supported chat model; *-image keeps
+// the previous strip (gpt-5.5-image → gpt-5.5).
+function resolveCodexChatModel(model) {
+  if (isDedicatedImageModel(model)) return CODEX_IMAGE_CHAT_MODEL;
   return model.endsWith(CODEX_MODEL_SUFFIX) ? model.slice(0, -CODEX_MODEL_SUFFIX.length) : model;
 }
 
@@ -171,8 +181,9 @@ export default {
     if (body.size && body.size !== "") imgTool.size = body.size;
     if (body.quality && body.quality !== "") imgTool.quality = body.quality;
     if (body.background && body.background !== "") imgTool.background = body.background;
+    if (isDedicatedImageModel(model)) imgTool.model = model;
     return {
-      model: stripImageSuffix(model),
+      model: resolveCodexChatModel(model),
       instructions: "",
       input: [{ type: "message", role: "user", content: buildContent(body.prompt, refs, detail) }],
       tools: [imgTool],

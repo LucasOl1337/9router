@@ -367,6 +367,77 @@ describe("handleImageGenerationCore", () => {
     expect(responseBody.data[0].b64_json).toBe("base64codeximage");
   });
 
+  it("does not send gpt-image-2 as a ChatGPT Codex chat model slug", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        [
+          "event: response.output_item.done",
+          'data: {"item":{"type":"image_generation_call","result":"base64gptimage2"}}',
+          "",
+          "",
+        ].join("\n"),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: {
+        prompt: "A blue square",
+        size: "1024x1024",
+        output_format: "png",
+      },
+      modelInfo: { provider: "codex", model: "gpt-image-2" },
+      credentials: {
+        accessToken: "codex-token",
+        providerSpecificData: { chatgptAccountId: "account-123" },
+      },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(requestBody.model).not.toBe("gpt-image-2");
+    expect(requestBody.model).toBe("gpt-5.5");
+    expect(requestBody.tools[0]).toMatchObject({
+      type: "image_generation",
+      output_format: "png",
+      size: "1024x1024",
+      model: "gpt-image-2",
+    });
+
+    const responseBody = await result.response.json();
+    expect(responseBody.data[0].b64_json).toBe("base64gptimage2");
+  });
+
+  it("does not reroute an unregistered gpt-image-* slug onto the Codex chat model", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        [
+          "event: response.output_item.done",
+          'data: {"item":{"type":"image_generation_call","result":"base64unknown"}}',
+          "",
+          "",
+        ].join("\n"),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: { prompt: "A blue square", size: "1024x1024", output_format: "png" },
+      modelInfo: { provider: "codex", model: "gpt-image-3" },
+      credentials: {
+        accessToken: "codex-token",
+        providerSpecificData: { chatgptAccountId: "account-123" },
+      },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(requestBody.model).toBe("gpt-image-3");
+    expect(requestBody.tools[0]).not.toHaveProperty("model");
+  });
+
   it("generates image with Cloudflare Workers AI JSON response", async () => {
     global.fetch.mockResolvedValueOnce(
       new Response(

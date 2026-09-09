@@ -6,6 +6,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
+import { AI_PROVIDERS } from "@/shared/constants/providers.js";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -89,9 +90,20 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  const fallbackProviderId = AI_PROVIDERS[provider]?.imageConfig?.credentialFallback;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
+    let credentialProviderId = provider;
+    let credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
+
+    // e.g. xai image reuses grok-cli OAuth when there is no xai sqlite row.
+    if (!credentials && fallbackProviderId) {
+      credentials = await getProviderCredentials(fallbackProviderId, excludeConnectionIds, model, { preferredConnectionId });
+      if (credentials) {
+        credentialProviderId = fallbackProviderId;
+        log.info("AUTH", `\x1b[32m${provider} reusing ${fallbackProviderId} credentials\x1b[0m`);
+      }
+    }
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
@@ -105,7 +117,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 
-    const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    const refreshedCredentials = await checkAndRefreshToken(credentialProviderId, credentials);
 
     const result = await handleImageGenerationCore({
       body,
@@ -128,7 +140,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
     if (result.success) return result.response;
 
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
+    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, credentialProviderId, model);
 
     if (shouldFallback) {
       excludeConnectionIds.add(credentials.connectionId);
