@@ -5,13 +5,12 @@ import { sizeToAspectRatio } from "./_base.js";
 const imageCfg = (id) => PROVIDER_MEDIA[id]?.imageConfig || {};
 const imageUrl = (id) => imageCfg(id).baseUrl;
 
-// bodyFields is provider-wide; each model declares the optional params it
-// accepts (xAI: only grok-imagine-* takes aspect_ratio/resolution/quality).
-const ALWAYS_SENT_FIELDS = new Set(["model", "prompt"]);
+// bodyFields is provider-wide; anything beyond the base body is opt-in per model
+// via its declared params (xAI: only grok-imagine-* takes aspect_ratio/resolution/quality).
+const BASE_BODY_FIELDS = new Set(["model", "prompt", "n", "response_format"]);
 function allowedBodyFields(providerId, model, bodyFields) {
-  const params = (PROVIDER_MODELS[providerId] || []).find((m) => m.id === model)?.params;
-  if (!Array.isArray(params)) return bodyFields;
-  return bodyFields.filter((f) => ALWAYS_SENT_FIELDS.has(f) || params.includes(f));
+  const params = (PROVIDER_MODELS[providerId] || []).find((m) => m.id === model)?.params || [];
+  return bodyFields.filter((f) => BASE_BODY_FIELDS.has(f) || params.includes(f));
 }
 
 export default function createOpenAIAdapter(providerId) {

@@ -3,7 +3,7 @@
  *
  * Covers:
  *  - adapter forwards Imagine fields and maps size → aspect_ratio
- *  - the legacy grok-2-image-1212 body stays limited to its declared params
+ *  - models that do not declare the Imagine params keep the legacy four-field body
  *  - OAuth accessToken is sent as Bearer (grok-cli credential shape)
  */
 
@@ -92,6 +92,38 @@ describe("xAI Imagine adapter", () => {
     const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
     expect(sent.aspect_ratio).toBe("1:1");
     expect(sent).not.toHaveProperty("size");
+  });
+
+  it("keeps an unregistered xai image model limited to model/prompt/n/response_format", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ created: 1, data: [{ b64_json: "Y3VzdG9t" }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: {
+        prompt: "a cube",
+        n: 1,
+        size: "1024x1024",
+        quality: "high",
+        resolution: "1k",
+        response_format: "b64_json",
+      },
+      modelInfo: { provider: "xai", model: "my-custom-xai-image" },
+      credentials: { accessToken: "tok" },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sent).toEqual({
+      model: "my-custom-xai-image",
+      prompt: "a cube",
+      n: 1,
+      response_format: "b64_json",
+    });
   });
 
   it("keeps the legacy grok-2-image-1212 body limited to model/prompt/n/response_format", async () => {

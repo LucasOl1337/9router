@@ -8,7 +8,7 @@ const CODEX_USER_AGENT = "codex_cli_rs/0.136.0";
 const CODEX_VERSION = "0.136.0";
 const CODEX_ORIGINATOR = "codex_cli_rs";
 const CODEX_MODEL_SUFFIX = "-image";
-const CODEX_DEDICATED_IMAGE_PREFIX = "gpt-image-";
+const CODEX_DEDICATED_IMAGE_MODEL = "gpt-image-2";
 const CODEX_REF_DETAIL = "high";
 const CODEX_IMAGE_CHAT_MODEL = "gpt-5.5";
 
@@ -26,7 +26,7 @@ function decodeAccountId(idToken) {
 }
 
 function isDedicatedImageModel(model) {
-  return typeof model === "string" && model.startsWith(CODEX_DEDICATED_IMAGE_PREFIX);
+  return model === CODEX_DEDICATED_IMAGE_MODEL;
 }
 
 // ChatGPT Codex Responses API rejects dedicated image slugs (gpt-image-2) as
