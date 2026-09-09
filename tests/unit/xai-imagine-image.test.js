@@ -94,6 +94,46 @@ describe("xAI Imagine adapter", () => {
     expect(sent).not.toHaveProperty("size");
   });
 
+  it("omits aspect_ratio when the caller sends no size", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ created: 1, data: [{ b64_json: "bm9zaXpl" }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: { prompt: "a tall movie poster", n: 1, response_format: "b64_json" },
+      modelInfo: { provider: "xai", model: "grok-imagine-image-2.0" },
+      credentials: { accessToken: "tok" },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sent).not.toHaveProperty("aspect_ratio");
+  });
+
+  it("omits aspect_ratio for a size outside the OpenAI ratio map", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ created: 1, data: [{ b64_json: "cG9ydHJhaXQ=" }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: { prompt: "a tall movie poster", n: 1, size: "1080x1920", response_format: "b64_json" },
+      modelInfo: { provider: "xai", model: "grok-imagine-image-2.0" },
+      credentials: { accessToken: "tok" },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sent).not.toHaveProperty("aspect_ratio");
+  });
+
   it("keeps an unregistered xai image model limited to model/prompt/n/response_format", async () => {
     global.fetch.mockResolvedValueOnce(
       new Response(
