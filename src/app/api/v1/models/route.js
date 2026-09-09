@@ -137,8 +137,8 @@ const INTERNAL_MODELS_FETCH_HEADER = "x-9r-internal-models-fetch";
 const LLM_KIND = "llm";
 
 // Kinds where a provider may be listed through another provider's credentials
-// (`credentialFallback`), e.g. xai image/video reusing the grok-cli connection.
-const CREDENTIAL_FALLBACK_KINDS = ["image", "video"];
+// (`credentialFallback`), e.g. xai image reusing the grok-cli connection.
+const CREDENTIAL_FALLBACK_KINDS = ["image"];
 
 // Map per-model `type` field (in PROVIDER_MODELS) to service kind.
 // Models without `type` are treated as LLM.

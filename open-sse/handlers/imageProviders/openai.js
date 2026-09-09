@@ -1,5 +1,6 @@
 // OpenAI-compatible adapter (used by openai, minimax, openrouter, recraft)
-import { PROVIDER_MEDIA, PROVIDER_MODELS } from "../../providers/index.js";
+import { PROVIDER_MEDIA } from "../../providers/index.js";
+import { getModelsByProviderId } from "../../config/providerModels.js";
 import { sizeToAspectRatio } from "./_base.js";
 
 const imageCfg = (id) => PROVIDER_MEDIA[id]?.imageConfig || {};
@@ -9,7 +10,7 @@ const imageUrl = (id) => imageCfg(id).baseUrl;
 // via its declared params (xAI: only grok-imagine-* takes aspect_ratio/resolution/quality).
 const BASE_BODY_FIELDS = new Set(["model", "prompt", "n", "response_format"]);
 function allowedBodyFields(providerId, model, bodyFields) {
-  const params = (PROVIDER_MODELS[providerId] || []).find((m) => m.id === model)?.params || [];
+  const params = getModelsByProviderId(providerId).find((m) => m.id === model)?.params || [];
   return bodyFields.filter((f) => BASE_BODY_FIELDS.has(f) || params.includes(f));
 }
 
