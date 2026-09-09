@@ -98,7 +98,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
     // e.g. xai image reuses grok-cli OAuth when there is no xai sqlite row.
     if (!credentials && fallbackProviderId) {
-      credentials = await getProviderCredentials(fallbackProviderId, excludeConnectionIds, model);
+      credentials = await getProviderCredentials(fallbackProviderId, excludeConnectionIds, model, { preferredConnectionId });
       if (credentials) {
         credentialProviderId = fallbackProviderId;
         log.info("AUTH", `\x1b[32m${provider} reusing ${fallbackProviderId} credentials\x1b[0m`);

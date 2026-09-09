@@ -111,7 +111,8 @@ describe("handleImageGeneration xai credentialFallback", () => {
     expect(authMocks.getProviderCredentials).toHaveBeenCalledWith(
       "grok-cli",
       expect.any(Set),
-      "grok-imagine-image-2.0"
+      "grok-imagine-image-2.0",
+      expect.objectContaining({ preferredConnectionId: null })
     );
     expect(tokenMocks.checkAndRefreshToken).toHaveBeenCalledWith("grok-cli", expect.objectContaining({
       connectionId: "gcli-1",
@@ -124,6 +125,39 @@ describe("handleImageGeneration xai credentialFallback", () => {
     );
     const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
     expect(sent.model).toBe("grok-imagine-image-2.0");
+  });
+
+
+  it("forwards an x-connection-id pin to the grok-cli fallback lookup", async () => {
+    authMocks.getProviderCredentials.mockImplementation(async (provider) => {
+      if (provider === "xai") return null;
+      if (provider === "grok-cli") return grokCliAccount({ connectionId: "gcli-2" });
+      return null;
+    });
+    global.fetch.mockResolvedValueOnce(
+      jsonResponse({ created: 1, data: [{ b64_json: "cGlu" }] })
+    );
+
+    const request = new Request("http://localhost/v1/images/generations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-connection-id": "gcli-2" },
+      body: JSON.stringify({
+        model: "xai/grok-imagine-image-2.0",
+        prompt: "a red cube",
+        n: 1,
+        response_format: "b64_json",
+      }),
+    });
+
+    const res = await handleImageGeneration(request);
+
+    expect(res.status).toBe(200);
+    expect(authMocks.getProviderCredentials).toHaveBeenCalledWith(
+      "grok-cli",
+      expect.any(Set),
+      "grok-imagine-image-2.0",
+      expect.objectContaining({ preferredConnectionId: "gcli-2" })
+    );
   });
 
   it("still errors when neither xai nor grok-cli has credentials", async () => {
@@ -155,6 +189,16 @@ describe("buildModelsList image catalog with grok-cli fallback", () => {
     expect(ids).toContain("xai/grok-imagine-image");
     expect(ids).toContain("cx/gpt-5.5-image");
     expect(ids).toContain("cx/gpt-image-2");
+  });
+
+  it("does not list ollama-search on the web catalog just because ollama is connected", async () => {
+    dbMocks.getProviderConnections.mockResolvedValue([
+      { provider: "ollama", isActive: true, providerSpecificData: {} },
+    ]);
+
+    const data = await buildModelsList(["webSearch", "webFetch"]);
+    const ids = data.map((m) => m.id);
+    expect(ids.some((id) => id.startsWith("ollama-search/"))).toBe(false);
   });
 
   it("does not list xai chat models on the LLM catalog just because grok-cli is connected", async () => {

@@ -1,9 +1,18 @@
 // OpenAI-compatible adapter (used by openai, minimax, openrouter, recraft)
-import { PROVIDER_MEDIA } from "../../providers/index.js";
+import { PROVIDER_MEDIA, PROVIDER_MODELS } from "../../providers/index.js";
 import { sizeToAspectRatio } from "./_base.js";
 
 const imageCfg = (id) => PROVIDER_MEDIA[id]?.imageConfig || {};
 const imageUrl = (id) => imageCfg(id).baseUrl;
+
+// bodyFields is provider-wide; each model declares the optional params it
+// accepts (xAI: only grok-imagine-* takes aspect_ratio/resolution/quality).
+const ALWAYS_SENT_FIELDS = new Set(["model", "prompt"]);
+function allowedBodyFields(providerId, model, bodyFields) {
+  const params = (PROVIDER_MODELS[providerId] || []).find((m) => m.id === model)?.params;
+  if (!Array.isArray(params)) return bodyFields;
+  return bodyFields.filter((f) => ALWAYS_SENT_FIELDS.has(f) || params.includes(f));
+}
 
 export default function createOpenAIAdapter(providerId) {
   const cfg = imageCfg(providerId);
@@ -23,11 +32,12 @@ export default function createOpenAIAdapter(providerId) {
       if (response_format) full.response_format = response_format;
       // bodyFields whitelist (e.g. xAI Imagine accepts aspect_ratio/resolution/quality)
       if (Array.isArray(cfg.bodyFields)) {
+        const fields = allowedBodyFields(providerId, model, cfg.bodyFields);
         if (body.aspect_ratio) full.aspect_ratio = body.aspect_ratio;
-        else if (cfg.bodyFields.includes("aspect_ratio")) full.aspect_ratio = sizeToAspectRatio(size);
+        else if (fields.includes("aspect_ratio")) full.aspect_ratio = sizeToAspectRatio(size);
         if (body.resolution) full.resolution = body.resolution;
         const req = {};
-        for (const f of cfg.bodyFields) if (full[f] !== undefined) req[f] = full[f];
+        for (const f of fields) if (full[f] !== undefined) req[f] = full[f];
         return req;
       }
       return full;

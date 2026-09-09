@@ -1,40 +1,16 @@
 /**
- * xAI Imagine image models: registry wiring + OpenAI-compatible adapter body.
+ * xAI Imagine image models through the OpenAI-compatible adapter.
  *
  * Covers:
- *  - grok-imagine-image / grok-imagine-image-2.0 as kind image
- *  - imageConfig.bodyFields includes aspect_ratio, resolution, quality
- *  - credentialFallback to grok-cli (no cloned xai sqlite row)
  *  - adapter forwards Imagine fields and maps size → aspect_ratio
+ *  - the legacy grok-2-image-1212 body stays limited to its declared params
  *  - OAuth accessToken is sent as Bearer (grok-cli credential shape)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
-import { PROVIDER_MEDIA, PROVIDER_MODELS } from "../../open-sse/providers/index.js";
 
 const originalFetch = global.fetch;
-
-describe("xAI Imagine registry wiring", () => {
-  it("registers Imagine 1.0 and 2.0 as image models", () => {
-    const ids = (PROVIDER_MODELS.xai || []).filter((m) => m.kind === "image").map((m) => m.id);
-    expect(ids).toContain("grok-imagine-image");
-    expect(ids).toContain("grok-imagine-image-2.0");
-  });
-
-  it("whitelists Imagine body fields and reuses grok-cli credentials", () => {
-    expect(PROVIDER_MEDIA.xai.credentialFallback).toBe("grok-cli");
-    expect(PROVIDER_MEDIA.xai.imageConfig.bodyFields).toEqual([
-      "model",
-      "prompt",
-      "n",
-      "response_format",
-      "aspect_ratio",
-      "resolution",
-      "quality",
-    ]);
-  });
-});
 
 describe("xAI Imagine adapter", () => {
   beforeEach(() => {
@@ -116,5 +92,38 @@ describe("xAI Imagine adapter", () => {
     const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
     expect(sent.aspect_ratio).toBe("1:1");
     expect(sent).not.toHaveProperty("size");
+  });
+
+  it("keeps the legacy grok-2-image-1212 body limited to model/prompt/n/response_format", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ created: 1, data: [{ b64_json: "bGVnYWN5" }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: {
+        prompt: "a cube",
+        n: 1,
+        size: "1024x1024",
+        quality: "high",
+        aspect_ratio: "16:9",
+        resolution: "1k",
+        response_format: "b64_json",
+      },
+      modelInfo: { provider: "xai", model: "grok-2-image-1212" },
+      credentials: { accessToken: "tok" },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sent).toEqual({
+      model: "grok-2-image-1212",
+      prompt: "a cube",
+      n: 1,
+      response_format: "b64_json",
+    });
   });
 });
