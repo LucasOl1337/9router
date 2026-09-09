@@ -2,13 +2,16 @@
 import { randomUUID } from "node:crypto";
 import { nowSec } from "./_base.js";
 import { PROVIDERS } from "../../config/providers.js";
+import { PROVIDER_MODELS } from "../../providers/index.js";
 
 const CODEX_RESPONSES_URL = PROVIDERS["codex"].baseUrl;
 const CODEX_USER_AGENT = "codex_cli_rs/0.136.0";
 const CODEX_VERSION = "0.136.0";
 const CODEX_ORIGINATOR = "codex_cli_rs";
 const CODEX_MODEL_SUFFIX = "-image";
+const CODEX_DEDICATED_IMAGE_PREFIX = "gpt-image-";
 const CODEX_REF_DETAIL = "high";
+const CODEX_IMAGE_CHAT_FALLBACK = "gpt-5.5";
 
 function decodeAccountId(idToken) {
   try {
@@ -23,7 +26,24 @@ function decodeAccountId(idToken) {
   }
 }
 
-function stripImageSuffix(model) {
+function isDedicatedImageModel(model) {
+  return typeof model === "string" && model.startsWith(CODEX_DEDICATED_IMAGE_PREFIX);
+}
+
+function defaultCodexImageChatModel() {
+  const models = PROVIDER_MODELS.cx || [];
+  const fallbackImage = models.find(
+    (m) => (m.kind || m.type) === "image" && String(m.id).endsWith(CODEX_MODEL_SUFFIX)
+  );
+  if (fallbackImage) return fallbackImage.id.slice(0, -CODEX_MODEL_SUFFIX.length);
+  return CODEX_IMAGE_CHAT_FALLBACK;
+}
+
+// ChatGPT Codex Responses API rejects dedicated image slugs (gpt-image-2) as
+// the top-level `model`. Map those to a supported chat model; *-image keeps
+// the previous strip (gpt-5.5-image → gpt-5.5).
+function resolveCodexChatModel(model) {
+  if (isDedicatedImageModel(model)) return defaultCodexImageChatModel();
   return model.endsWith(CODEX_MODEL_SUFFIX) ? model.slice(0, -CODEX_MODEL_SUFFIX.length) : model;
 }
 
@@ -171,8 +191,9 @@ export default {
     if (body.size && body.size !== "") imgTool.size = body.size;
     if (body.quality && body.quality !== "") imgTool.quality = body.quality;
     if (body.background && body.background !== "") imgTool.background = body.background;
+    if (isDedicatedImageModel(model)) imgTool.model = model;
     return {
-      model: stripImageSuffix(model),
+      model: resolveCodexChatModel(model),
       instructions: "",
       input: [{ type: "message", role: "user", content: buildContent(body.prompt, refs, detail) }],
       tools: [imgTool],

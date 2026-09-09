@@ -290,6 +290,29 @@ export async function buildModelsList(kindFilter, options = {}) {
     }
   }
 
+  // credentialFallback (e.g. xai → grok-cli): list media models when the
+  // fallback provider is connected, without cloning tokens into a new row.
+  // Skip LLM-only catalogs so xai chat models do not appear solely because
+  // grok-cli is signed in.
+  if (connections.length > 0 && kindFilter.some((k) => k !== LLM_KIND)) {
+    for (const [providerId, provider] of Object.entries(AI_PROVIDERS)) {
+      if (activeConnectionByProvider.has(providerId)) continue;
+      if (!providerMatchesKinds(providerId, kindFilter)) continue;
+      const fallbackId = provider.credentialFallback;
+      if (!fallbackId || !activeConnectionByProvider.has(fallbackId)) continue;
+      const fallbackConn = activeConnectionByProvider.get(fallbackId);
+      activeConnectionByProvider.set(providerId, {
+        ...fallbackConn,
+        provider: providerId,
+        providerSpecificData: {
+          ...(fallbackConn.providerSpecificData || {}),
+          prefix: undefined,
+          enabledModels: undefined,
+        },
+      });
+    }
+  }
+
   const models = [];
 
   // Combos first (filtered by kind). Web combos expose `kind` so AI knows search vs fetch.

@@ -1,5 +1,6 @@
 // OpenAI-compatible adapter (used by openai, minimax, openrouter, recraft)
 import { PROVIDER_MEDIA } from "../../providers/index.js";
+import { sizeToAspectRatio } from "./_base.js";
 
 const imageCfg = (id) => PROVIDER_MEDIA[id]?.imageConfig || {};
 const imageUrl = (id) => imageCfg(id).baseUrl;
@@ -20,8 +21,11 @@ export default function createOpenAIAdapter(providerId) {
       if (quality) full.quality = quality;
       if (style) full.style = style;
       if (response_format) full.response_format = response_format;
-      // bodyFields whitelist (e.g. xAI accepts only model/prompt/n/response_format)
+      // bodyFields whitelist (e.g. xAI Imagine accepts aspect_ratio/resolution/quality)
       if (Array.isArray(cfg.bodyFields)) {
+        if (body.aspect_ratio) full.aspect_ratio = body.aspect_ratio;
+        else if (cfg.bodyFields.includes("aspect_ratio")) full.aspect_ratio = sizeToAspectRatio(size);
+        if (body.resolution) full.resolution = body.resolution;
         const req = {};
         for (const f of cfg.bodyFields) if (full[f] !== undefined) req[f] = full[f];
         return req;

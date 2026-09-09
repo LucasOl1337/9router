@@ -34,10 +34,14 @@ export default {
     { id: "grok-code-fast-1", name: "Grok Code Fast" },
     { id: "grok-3", name: "Grok 3" },
     { id: "grok-2-image-1212", name: "Grok 2 Image", params: ["n","response_format"], kind: "image" },
+    { id: "grok-imagine-image", name: "Grok Imagine Image", params: ["n","response_format","aspect_ratio","resolution","quality"], kind: "image" },
+    { id: "grok-imagine-image-2.0", name: "Grok Imagine Image 2.0", params: ["n","response_format","aspect_ratio","resolution","quality"], kind: "image" },
     { id: "grok-imagine-video", name: "Grok Imagine Video", params: ["duration","aspect_ratio","resolution"], kind: "video" },
   ],
   serviceKinds: ["llm","imageToText","webSearch","image","video"],
-  imageConfig: { baseUrl: "https://api.x.ai/v1/images/generations", bodyFields: ["model","prompt","n","response_format"] },
+  // Reuse grok-cli OAuth (api:access) when no dedicated xai connection exists.
+  credentialFallback: "grok-cli",
+  imageConfig: { baseUrl: "https://api.x.ai/v1/images/generations", bodyFields: ["model","prompt","n","response_format","aspect_ratio","resolution","quality"] },
   // Async video jobs (POST returns { request_id }, GET polls until done/failed).
   // Docs: https://docs.x.ai/developers/rest-api-reference/inference/videos
   videoConfig: { baseUrl: "https://api.x.ai/v1/videos" },
