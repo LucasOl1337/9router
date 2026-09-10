@@ -478,6 +478,42 @@ function releaseAcpProc(proc, pooled) {
   t.unref?.();
 }
 
+// Extract a JSON payload from an agent reply: strips ```json fences, drops
+// leading/trailing prose around the outermost {…} block. Returns the raw text
+// when nothing parses — the client reports the contract violation itself.
+function extractJsonText(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return trimmed;
+  try {
+    JSON.parse(trimmed);
+    return trimmed;
+  } catch {
+    /* fallthrough */
+  }
+  const fenced = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fenced?.[1]) {
+    const inner = fenced[1].trim();
+    try {
+      JSON.parse(inner);
+      return inner;
+    } catch {
+      /* fallthrough */
+    }
+  }
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    const slice = trimmed.slice(start, end + 1);
+    try {
+      JSON.parse(slice);
+      return slice;
+    } catch {
+      /* fallthrough */
+    }
+  }
+  return trimmed;
+}
+
 // ─── DevinCliExecutor ─────────────────────────────────────────────────────────
 
 export class DevinCliExecutor extends BaseExecutor {
@@ -504,7 +540,25 @@ export class DevinCliExecutor extends BaseExecutor {
       : Array.isArray(b.input)
         ? b.input
         : [];
-    const promptText = buildPromptText(messages);
+    let promptText = buildPromptText(messages);
+
+    // Structured output: AI SDK Output.object / generateObject send
+    // response_format {type:"json_schema"|"json_object"}. The ACP agent has no
+    // JSON mode, so enforce it at prompt level and buffer the reply into a
+    // single clean JSON delta at the end.
+    const rf = b.response_format;
+    const jsonMode = rf?.type === "json_schema" || rf?.type === "json_object";
+    if (jsonMode) {
+      const schema = rf?.json_schema?.schema;
+      promptText +=
+        "\n\n[Output contract] Respond with ONLY a valid JSON object" +
+        (schema ? ` matching this JSON Schema:\n${JSON.stringify(schema)}` : "") +
+        "\nNo prose, no explanation, no markdown code fences.";
+    }
+    // Non-streaming clients (AI SDK generateObject/Output.object use
+    // doGenerate) expect a JSON body — an SSE stream fails to parse as
+    // "Invalid JSON response". Buffer everything and emit one JSON object.
+    const nonStream = b.stream !== true;
     const workspaceCwd = resolveWorkspaceCwd(b);
     const devinBin = resolveDevinBin();
 
@@ -567,7 +621,14 @@ export class DevinCliExecutor extends BaseExecutor {
       start(controller) {
         (async () => {
         const enc = new TextEncoder();
-        const emit = (data) => controller.enqueue(enc.encode(data));
+        // DEVIN_DEBUG_DUMP=/path → mirror raw SSE emissions for postmortem.
+        const dumpPath = process.env.DEVIN_DEBUG_DUMP;
+        const emit = (data) => {
+          if (dumpPath) {
+            try { fs.appendFileSync(dumpPath, data); } catch { /* debug only */ }
+          }
+          controller.enqueue(enc.encode(data));
+        };
 
         // Inherit the parent environment so devin resolves stored CLI credentials
         // (~/.local/share/devin/credentials.toml from `devin auth login`). Do NOT
@@ -598,8 +659,13 @@ export class DevinCliExecutor extends BaseExecutor {
         };
 
         // Emit a content delta as an OpenAI-compatible SSE chunk (handles the
-        // leading role chunk once).
+        // leading role chunk once). Buffered modes (jsonMode, nonStream) emit
+        // the full reply in finish() instead.
         const emitDelta = (delta) => {
+          if (jsonMode || nonStream) {
+            totalText += delta;
+            return;
+          }
           if (!roleEmitted) {
             emit(
               `data: ${JSON.stringify({
@@ -630,8 +696,17 @@ export class DevinCliExecutor extends BaseExecutor {
         // ACP tool_call is upsert-by-id: the first event has title, a later update
         // may only carry rawInput (title omitted). Track pending client-tool calls.
         const pendingClientTools = new Map(); // toolCallId → original tool name
+        let bufferedToolCall = null; // nonStream: {id, name, argsStr}
         const emitToolUse = (toolName, args, toolCallId) => {
           const argsStr = typeof args === "string" ? args : JSON.stringify(args ?? {});
+          if (nonStream) {
+            bufferedToolCall = {
+              id: toolCallId || `call_${Date.now()}`,
+              name: toolName,
+              argsStr,
+            };
+            return;
+          }
           if (!roleEmitted) {
             emit(
               `data: ${JSON.stringify({
@@ -679,6 +754,52 @@ export class DevinCliExecutor extends BaseExecutor {
               `data: ${JSON.stringify({ error: { message: error, type: "devin_cli_error" } })}\n\n`
             );
           } else {
+            // Buffered replies (jsonMode / nonStream) go out as one delta —
+            // still SSE; chatCore converts to a JSON body for non-stream
+            // clients upstream.
+            if ((jsonMode || nonStream) && totalText) {
+              const text = jsonMode ? extractJsonText(totalText) : totalText;
+              emit(
+                `data: ${JSON.stringify({
+                  id: responseId,
+                  object: "chat.completion.chunk",
+                  created,
+                  model,
+                  choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: null }],
+                })}\n\n`
+              );
+              roleEmitted = true;
+            }
+            // Buffered non-stream tool call: same SSE shape as streaming.
+            if (nonStream && bufferedToolCall) {
+              emit(
+                `data: ${JSON.stringify({
+                  id: responseId,
+                  object: "chat.completion.chunk",
+                  created,
+                  model,
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        role: "assistant",
+                        tool_calls: [
+                          {
+                            index: 0,
+                            id: bufferedToolCall.id,
+                            type: "function",
+                            function: { name: bufferedToolCall.name, arguments: bufferedToolCall.argsStr },
+                          },
+                        ],
+                      },
+                      finish_reason: null,
+                    },
+                  ],
+                })}\n\n`
+              );
+              roleEmitted = true;
+            }
+            if (bufferedToolCall) finishReason = "tool_calls";
             // Emit finish chunk
             emit(
               `data: ${JSON.stringify({
@@ -884,10 +1005,14 @@ export class DevinCliExecutor extends BaseExecutor {
             })
             .then((res) => {
               if (!roleEmitted) {
-                const content = extractResultText(res);
-                if (content) {
-                  totalText = content;
-                  emitDelta(content);
+                // jsonMode keeps roleEmitted false while buffering; the final
+                // result text is only a fallback when nothing streamed.
+                if (!jsonMode || !totalText) {
+                  const content = extractResultText(res);
+                  if (content) {
+                    totalText = content;
+                    emitDelta(content);
+                  }
                 }
                 const stopReason = res?.stopReason || "";
                 if (stopReason && stopReason !== "cancelled") finish();
