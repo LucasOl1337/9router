@@ -300,6 +300,184 @@ function buildPromptText(messages) {
   return lines.join("\n\n") || "(empty)";
 }
 
+// ─── ACP process pool ─────────────────────────────────────────────────────────
+// devin reads its MCP server config (XDG_CONFIG_HOME/devin/config.json) once at
+// process boot — the session/new mcpServers param is ignored — so a warm process
+// can only serve the tool-set it spawned with. The pool is keyed by a signature
+// of that boot config (agent type + mcpServers + cwd); identical requests reuse
+// the process and save ~1.5s of spawn+initialize churn per call. Seeded
+// DEVIN_MCP_RESULTS are per-request data and are excluded from pooled configs
+// (results still travel inlined in the prompt text).
+const acpPool = new Map(); // sig → proc[]
+let acpPoolSize = 0;
+const ACP_POOL_MAX = Math.max(
+  1,
+  parseInt(process.env.CLI_DEVIN_POOL_MAX || "4", 10) || 4
+);
+
+function acpSig(agentType, mcpServers, cwd) {
+  return JSON.stringify({ agentType: agentType || "", mcp: mcpServers || {}, cwd });
+}
+
+function spawnAcpProc(devinBin, acpArgs, env, cwd, sig, log) {
+  const child = spawn(devinBin, acpArgs, {
+    env,
+    cwd,
+    stdio: ["pipe", "pipe", "pipe"],
+    shell: process.platform === "win32",
+  });
+  const proc = {
+    child,
+    sig,
+    busy: true,
+    dead: false,
+    pending: new Map(),
+    buf: "",
+    handler: null,
+    idCounter: 1,
+    xdgDir: null,
+    log,
+  };
+  proc.rpc = (method, params) => {
+    if (proc.dead || child.stdin.destroyed) {
+      return Promise.reject(new Error("devin acp process not running"));
+    }
+    const id = proc.idCounter++;
+    return new Promise((resolve, reject) => {
+      proc.pending.set(id, { resolve, reject });
+      try {
+        child.stdin.write(rpc(method, params, id));
+      } catch (e) {
+        proc.pending.delete(id);
+        reject(e);
+      }
+    });
+  };
+  child.stdout.on("data", (chunk) => {
+    proc.buf += chunk.toString("utf8");
+    let nl;
+    while ((nl = proc.buf.indexOf("\n")) !== -1) {
+      const line = proc.buf.slice(0, nl).trim();
+      proc.buf = proc.buf.slice(nl + 1);
+      if (!line) continue;
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue; // non-JSON banner/log lines
+      }
+      if (msg.id !== undefined && proc.pending.has(msg.id)) {
+        const p = proc.pending.get(msg.id);
+        proc.pending.delete(msg.id);
+        if (msg.error) {
+          const err = new Error(msg.error.message || "Devin ACP error");
+          err.code = msg.error.code;
+          p.reject(err);
+        } else {
+          p.resolve(msg.result);
+        }
+        continue;
+      }
+      if (msg.method || msg.error) proc.handler?.(msg);
+    }
+  });
+  child.stderr.on("data", (chunk) => {
+    log?.debug?.("DEVIN", `stderr: ${chunk.toString("utf8").slice(0, 200)}`);
+  });
+  const onDead = () => {
+    if (proc.dead) return;
+    proc.dead = true;
+    for (const p of proc.pending.values()) p.reject(new Error("devin acp exited"));
+    proc.pending.clear();
+    const h = proc.handler;
+    proc.handler = null;
+    h?.onClose?.(proc.exitCode);
+    if (proc.sig && acpPool.has(proc.sig)) {
+      const rest = acpPool.get(proc.sig).filter((x) => x !== proc);
+      if (rest.length) acpPool.set(proc.sig, rest);
+      else acpPool.delete(proc.sig);
+      acpPoolSize--;
+    }
+    if (proc.xdgDir) {
+      try {
+        fs.rmSync(proc.xdgDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+      proc.xdgDir = null;
+    }
+  };
+  child.on("error", onDead);
+  child.on("close", (code) => {
+    proc.exitCode = code;
+    onDead();
+  });
+  return proc;
+}
+
+async function acquireAcpProc({ sig, devinBin, acpArgs, env, cwd, mcpServers, log }) {
+  const list = acpPool.get(sig) || [];
+  const idle = list.find((p) => !p.busy && !p.dead);
+  if (idle) {
+    idle.busy = true;
+    return { proc: idle, pooled: true };
+  }
+
+  const spawnEnv = { ...env };
+  let xdgDir = null;
+  if (mcpServers && Object.keys(mcpServers).length) {
+    xdgDir = fs.mkdtempSync(path.join(os.tmpdir(), "devin-mcp-"));
+    const cfgDev = path.join(xdgDir, "devin");
+    fs.mkdirSync(cfgDev, { recursive: true });
+    fs.writeFileSync(
+      path.join(cfgDev, "config.json"),
+      JSON.stringify({ mcpServers })
+    );
+    spawnEnv.XDG_CONFIG_HOME = xdgDir;
+    log?.info?.("DEVIN", `mcp config written → ${xdgDir}`);
+  }
+
+  const pooled = acpPoolSize < ACP_POOL_MAX;
+  const proc = spawnAcpProc(devinBin, acpArgs, spawnEnv, cwd, pooled ? sig : null, log);
+  proc.xdgDir = xdgDir;
+  try {
+    await proc.rpc("initialize", {
+      protocolVersion: "0.3",
+      clientInfo: { name: "9router", version: "1.0" },
+      capabilities: {},
+    });
+  } catch (e) {
+    try {
+      proc.child.kill("SIGKILL");
+    } catch {
+      /* ignore */
+    }
+    throw e;
+  }
+  if (pooled) {
+    acpPool.set(sig, [...list, proc]);
+    acpPoolSize++;
+  }
+  return { proc, pooled };
+}
+
+function releaseAcpProc(proc, pooled) {
+  proc.handler = null;
+  if (pooled && !proc.dead) {
+    proc.busy = false;
+    return;
+  }
+  try {
+    proc.child.stdin.end();
+  } catch {
+    /* ignore */
+  }
+  const t = setTimeout(() => {
+    if (!proc.child.killed) proc.child.kill("SIGKILL");
+  }, 2000);
+  t.unref?.();
+}
+
 // ─── DevinCliExecutor ─────────────────────────────────────────────────────────
 
 export class DevinCliExecutor extends BaseExecutor {
@@ -339,11 +517,10 @@ export class DevinCliExecutor extends BaseExecutor {
     //   {"echo":{"command":"/abs/node","args":["/srv/echo.js"],"env":{"K":"V"}}}
     // Plus body.tools (OpenAI schema) → exposed as a "clientTools" MCP
     // server so devin can invoke client-defined tools (bridged back in Phase 2).
-    // When any are present, a throwaway XDG_CONFIG_HOME holds devin/config.json so
-    // the agent auto-connects them (session/new mcpServers alone doesn't spawn
-    // them — see ACP mcp/connect, still unstable). Cleaned up on finish.
+    // devin reads the MCP config from XDG_CONFIG_HOME/devin/config.json once at
+    // process boot (the session/new mcpServers param is ignored), so the config
+    // is written per pooled process and the pool key includes it.
     // NOTE: this replaces the user's global devin MCP config for the subprocess.
-    let mcpConfigDir = null;
     const mcpServers = {};
     const mcpJson = process.env.DEVIN_MCP_SERVERS?.trim();
     if (mcpJson) {
@@ -366,33 +543,29 @@ export class DevinCliExecutor extends BaseExecutor {
           (seeded ? ` (seeded ${seeded} result(s))` : "")
       );
     }
-    if (Object.keys(mcpServers).length) {
-      try {
-        mcpConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "devin-mcp-"));
-        const cfgDev = path.join(mcpConfigDir, "devin");
-        fs.mkdirSync(cfgDev, { recursive: true });
-        fs.writeFileSync(
-          path.join(cfgDev, "config.json"),
-          JSON.stringify({ mcpServers })
-        );
-        log?.info?.("DEVIN", `mcp config written → ${mcpConfigDir}`);
-      } catch (e) {
-        log?.info?.("DEVIN", `mcp config write failed: ${e.message}`);
-        mcpConfigDir = null;
-      }
+    // Pool-stable variant: seeded DEVIN_MCP_RESULTS are per-request data (a
+    // warm process would serve stale values to later requests), so pooled
+    // configs drop them — results still reach the agent inlined in the prompt.
+    const mcpServersStable = { ...mcpServers };
+    if (mcpServersStable.clientTools?.env) {
+      const stableEnv = { ...mcpServersStable.clientTools.env };
+      delete stableEnv.DEVIN_MCP_RESULTS;
+      mcpServersStable.clientTools = { ...mcpServersStable.clientTools, env: stableEnv };
     }
-    const cleanupMcp = () => {
-      if (!mcpConfigDir) return;
-      try {
-        fs.rmSync(mcpConfigDir, { recursive: true, force: true });
-      } catch {
-        /* ignore */
-      }
-      mcpConfigDir = null;
-    };
+
+    // Agent type: default (omitted) = full agent with built-in tools
+    // (fs/shell/search) so the model can actually perform tasks. Override to
+    // `summarizer` (no tools, text-only) via CLI_DEVIN_AGENT_TYPE for a safer,
+    // tool-less mode. WARNING: the default agent can run shell commands and
+    // modify the filesystem on the host running 9router — only expose locally.
+    const agentType = process.env.CLI_DEVIN_AGENT_TYPE?.trim();
+    const acpArgs = ["acp"];
+    if (agentType) acpArgs.push("--agent-type", agentType);
+    const sig = acpSig(agentType, mcpServersStable, workspaceCwd);
 
     const sseStream = new ReadableStream({
       start(controller) {
+        (async () => {
         const enc = new TextEncoder();
         const emit = (data) => controller.enqueue(enc.encode(data));
 
@@ -406,71 +579,22 @@ export class DevinCliExecutor extends BaseExecutor {
         // hang the stream on the first shell/exec tool call). Override via env.
         // WARNING: bypass lets the agent run shell/modify FS unattended — local only.
         env.DEVIN_PERMISSION_MODE = process.env.DEVIN_PERMISSION_MODE || "bypass";
-        if (mcpConfigDir) env.XDG_CONFIG_HOME = mcpConfigDir;
 
-        // Agent type: default (omitted) = full agent with built-in tools
-        // (fs/shell/search) so the model can actually perform tasks. Override to
-        // `summarizer` (no tools, text-only) via CLI_DEVIN_AGENT_TYPE for a safer,
-        // tool-less mode. WARNING: the default agent can run shell commands and
-        // modify the filesystem on the host running 9router — only expose locally.
-        const agentType = process.env.CLI_DEVIN_AGENT_TYPE?.trim();
-        const acpArgs = ["acp"];
-        if (agentType) acpArgs.push("--agent-type", agentType);
-
-        // Spawn in the client workspace cwd (from <cwd> env context) so built-in
-        // file tools create/delete relative paths in the user's project.
-        // MCP config still comes from XDG_CONFIG_HOME (throwaway), not project .devin/.
-        const child = spawn(devinBin, acpArgs, {
-          env,
-          cwd: workspaceCwd,
-          stdio: ["pipe", "pipe", "pipe"],
-          // On Windows, devin.exe may need shell resolution
-          shell: process.platform === "win32",
-        });
-
-        let spawnError = null;
-        let stdinClosed = false;
-
-        child.on("error", (err) => {
-          spawnError = err;
-          const msg =
-            err.message.includes("ENOENT") || err.message.includes("not found")
-              ? `Devin CLI not found: ${devinBin}. Install via https://cli.devin.ai or set CLI_DEVIN_BIN env var.`
-              : `Devin CLI spawn error: ${err.message}`;
-          emit(
-            `data: ${JSON.stringify({ error: { message: msg, type: "devin_cli_error", code: "spawn_failed" } })}\n\n`
-          );
-          emit("data: [DONE]\n\n");
-          controller.close();
-        });
-
-        if (signal) {
-          signal.addEventListener("abort", () => {
-            if (!child.killed) child.kill("SIGTERM");
-          });
-        }
-
-        // ── JSON-RPC state machine ──────────────────────────────────────────
-        let idCounter = 1;
+        // ── per-request stream state ──────────────────────────────────────
         let sessionId = null;
-        let initDone = false;
-        let sessionCreated = false;
-        let promptSent = false;
         const responseId = `chatcmpl-devin-${Date.now()}`;
         const created = Math.floor(Date.now() / 1000);
         let roleEmitted = false;
         let totalText = "";
         let finished = false;
 
-        const sendRpc = (method, params) => {
-          if (stdinClosed || child.stdin.destroyed) return;
-          const id = idCounter++;
-          try {
-            child.stdin.write(rpc(method, params, id));
-          } catch {
-            /* ignore write errors after close */
-          }
-          return id;
+        let proc = null;
+        let pooled = false;
+        let releaseDone = false;
+        const release = () => {
+          if (releaseDone || !proc) return;
+          releaseDone = true;
+          releaseAcpProc(proc, pooled);
         };
 
         // Emit a content delta as an OpenAI-compatible SSE chunk (handles the
@@ -573,224 +697,218 @@ export class DevinCliExecutor extends BaseExecutor {
             );
           }
           emit("data: [DONE]\n\n");
-
-          // Gracefully close stdin → devin will exit
+          release();
           try {
-            if (!stdinClosed) {
-              stdinClosed = true;
-              child.stdin.end();
-            }
+            controller.close();
           } catch {
             /* ignore */
           }
-
-          // Give it 2s to exit cleanly, then SIGKILL
-          const killTimer = setTimeout(() => {
-            if (!child.killed) child.kill("SIGKILL");
-          }, 2000);
-          killTimer.unref?.();
-
-          controller.close();
-          cleanupMcp();
         };
 
-        // ── stdout reader (NDJSON) ──────────────────────────────────────────
-        let buffer = "";
+        // ── ACP process: warm pooled process (same tool-set signature) or a
+        // fresh spawn. Notifications route through proc.handler. ─────────────
+        let acquireErr = null;
+        try {
+          ({ proc, pooled } = await acquireAcpProc({
+            sig,
+            devinBin,
+            acpArgs,
+            env,
+            cwd: workspaceCwd,
+            mcpServers: mcpServersStable,
+            log,
+          }));
+        } catch (e) {
+          acquireErr = e;
+        }
 
-        child.stdout.on("data", (chunk) => {
-          buffer += chunk.toString("utf8");
-          let nl;
-          // Each ACP message is a newline-terminated JSON line
-          while ((nl = buffer.indexOf("\n")) !== -1) {
-            const line = buffer.slice(0, nl).trim();
-            buffer = buffer.slice(nl + 1);
-            if (!line) continue;
+        if (acquireErr) {
+          const msg =
+            acquireErr.code === "ENOENT" ||
+            String(acquireErr.message || "").includes("not found")
+              ? `Devin CLI not found: ${devinBin}. Install via https://cli.devin.ai or set CLI_DEVIN_BIN env var.`
+              : `Devin CLI spawn error: ${acquireErr.message}`;
+          emit(
+            `data: ${JSON.stringify({ error: { message: msg, type: "devin_cli_error", code: "spawn_failed" } })}\n\n`
+          );
+          emit("data: [DONE]\n\n");
+          try {
+            controller.close();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
 
-            let msg;
-            try {
-              msg = JSON.parse(line);
-            } catch {
-              continue; // ignore non-JSON lines (banner text, etc.)
-            }
-
-            // ── Initialize response ───────────────────────────────────────
-            if (!initDone && msg.result !== undefined && !msg.method) {
-              initDone = true;
-              // Create session with the client workspace cwd so agent file tools
-              // resolve relative paths against the project (not /tmp).
-              // `mcpServers` is required by devin 3000.2.x (must be a sequence);
-              // omitting it returns -32602 "Invalid params: missing field mcpServers".
-              sendRpc("session/new", {
-                cwd: workspaceCwd,
-                mcpServers: [],
-                model: model || undefined,
-              });
-              continue;
-            }
-
-            // ── session/new response → get sessionId ──────────────────────
-            if (initDone && !sessionCreated && msg.result !== undefined && !msg.method) {
-              const res = msg.result || {};
-              sessionId = res.sessionId || null;
-              if (!sessionId) {
-                finish("Devin ACP: session/new returned no sessionId");
-                return;
+        if (signal) {
+          signal.addEventListener("abort", () => {
+            // A prompt may be mid-flight: a killed process is evicted from the
+            // pool by onDead instead of being reused with dirty session state.
+            if (proc && !proc.child.killed) {
+              try {
+                proc.child.kill("SIGTERM");
+              } catch {
+                /* ignore */
               }
-              sessionCreated = true;
-              // Send the prompt. devin 3000.2.x expects `prompt` (a sequence),
-              // not `content` — using `content` returns -32602 "missing field prompt".
-              promptSent = true;
-              sendRpc("session/prompt", {
-                sessionId,
-                prompt: [{ type: "text", text: promptText }],
-              });
-              continue;
             }
+          });
+        }
 
-            // ── session/prompt response (ack / final result) ────────────
-            if (sessionCreated && promptSent && msg.result !== undefined && !msg.method) {
-              // Devin 3000.2.x only resolves session/prompt with the final result
-              // (stopReason) after streaming completes. Streaming notifications are
-              // handled below; nothing to do here unless we never streamed.
-              if (!roleEmitted) {
-                const res = msg.result || undefined;
-                const content = extractResultText(res);
-                if (content) {
-                  totalText = content;
-                  emitDelta(content);
-                }
-                const stopReason = (res && res.stopReason) || "";
-                if (stopReason && stopReason !== "cancelled") {
-                  finish();
-                  return;
-                }
-              }
-              continue;
-            }
-
-            // ── Permission requests → auto-approve the first allow option ──
-            // Devi asks before running shell/exec tools; as a headless proxy we
-            // grant once. (DEVIN_PERMISSION_MODE=bypass usually prevents these,
-            // but some tool kinds still prompt, so handle them here too.)
-            if (msg.method === "session/request_permission" && msg.id !== undefined) {
-              const options = msg.params?.options || [];
-              const allow =
-                options.find((o) => /allow/i.test(String(o.kind || ""))) || options[0];
-              if (allow) {
-                child.stdin.write(
+        proc.handler = (msg) => {
+          // ── Permission requests → auto-approve the first allow option ──
+          // devin asks before running shell/exec tools; as a headless proxy we
+          // grant once. (DEVIN_PERMISSION_MODE=bypass usually prevents these,
+          // but some tool kinds still prompt, so handle them here too.)
+          if (msg.method === "session/request_permission" && msg.id !== undefined) {
+            const options = msg.params?.options || [];
+            const allow =
+              options.find((o) => /allow/i.test(String(o.kind || ""))) || options[0];
+            if (allow) {
+              try {
+                proc.child.stdin.write(
                   JSON.stringify({
                     jsonrpc: "2.0",
                     id: msg.id,
                     result: { outcome: { outcome: "selected", optionId: allow.optionId } },
                   }) + "\n"
                 );
+              } catch {
+                /* ignore */
               }
-              continue;
             }
-
-            // ── Agent stopped notification (devin 3000.2.x stop signal) ───
-            if (msg.method === "_cognition.ai/agent_stopped" || msg.method === "$/agent_stopped") {
-              const cause = msg.params?.cause;
-              if (cause === "error") {
-                // devin uses errorMessage on this notification (not message/error).
-                const errText =
-                  msg.params?.errorMessage ||
-                  msg.params?.message ||
-                  msg.params?.error ||
-                  "Devin agent error";
-                finish(String(errText));
-              } else {
-                finish();
-              }
-              return;
-            }
-
-            // ── Streaming notifications (session/update) ──────────────────
-            if (msg.method === "session/update" || msg.method === "$/update") {
-              const params = msg.params;
-              if (!params) continue;
-
-              // devin 3000.2.x nests the payload under params.update.sessionUpdate;
-              // older devin used a flat params.type.
-              const update = params.update || {};
-              const type = update.sessionUpdate || params.type;
-              const contentField = update.content !== undefined ? update.content : params.content;
-              const deltaText =
-                typeof contentField === "string"
-                  ? contentField
-                  : contentField?.text ?? params.delta ?? params.text ?? "";
-
-              // ── Client-tool bridge: devin calling a tool from our exposed MCP ──
-              // ACP title shape: "Calling mcp_<name> from clientTools".
-              // tool_call is upsert-by-id: title may only appear on the first event,
-              // rawInput on a later tool_call_update. Track pending ids so we don't
-              // require both fields on the same notification.
-              if (
-                hasClientTools &&
-                !toolUseEmitted &&
-                (type === "tool_call" || type === "tool_call_update")
-              ) {
-                const tcId = update.toolCallId;
-                if (typeof update.title === "string" && update.title.startsWith("Calling mcp_") && /from clientTools\b/.test(update.title)) {
-                  const nameMatch = update.title.match(/^Calling (mcp_\S+)\b/);
-                  const mcpName = nameMatch ? nameMatch[1] : "";
-                  const origName = fromMcpToolName(mcpName);
-                  if (tcId && origName) pendingClientTools.set(tcId, origName);
-                }
-                const origName = tcId ? pendingClientTools.get(tcId) : null;
-                if (origName && update.rawInput) {
-                  toolUseEmitted = true;
-                  pendingClientTools.delete(tcId);
-                  emitToolUse(origName, update.rawInput, tcId || `call_${Date.now()}`);
-                  finish(null, "tool_calls");
-                  return;
-                }
-                continue;
-              }
-
-              if (type === "agent_message_chunk" || type === "message_delta" || type === "text_delta" || type === "content_delta") {
-                if (deltaText) emitDelta(deltaText);
-              } else if (type === "agent_thought_chunk") {
-                // Internal reasoning — not surfaced to the client.
-              } else if (type === "message_stop" || type === "stop" || type === "done") {
-                finish();
-                return;
-              } else if (type === "error") {
-                finish(String(params.message || params.error || "Devin ACP error"));
-                return;
-              }
-              continue;
-            }
-
-            // ── Error responses ───────────────────────────────────────────
-            if (msg.error) {
-              finish(`Devin ACP error ${msg.error.code}: ${msg.error.message}`);
-              return;
-            }
+            return;
           }
-        });
 
-        child.stderr.on("data", (chunk) => {
-          log?.debug?.("DEVIN", `stderr: ${chunk.toString("utf8").slice(0, 200)}`);
-        });
-
-        child.on("close", (code) => {
-          if (!finished) {
-            if (code !== 0 && !spawnError) {
-              finish(roleEmitted ? undefined : `Devin CLI exited with code ${code}`);
+          // ── Agent stopped notification (devin 3000.2.x stop signal) ───
+          if (msg.method === "_cognition.ai/agent_stopped" || msg.method === "$/agent_stopped") {
+            const cause = msg.params?.cause;
+            if (cause === "error") {
+              // devin uses errorMessage on this notification (not message/error).
+              const errText =
+                msg.params?.errorMessage ||
+                msg.params?.message ||
+                msg.params?.error ||
+                "Devin agent error";
+              finish(String(errText));
             } else {
               finish();
             }
-          } else {
-            cleanupMcp();
+            return;
           }
-        });
 
-        // ── Send initialize ───────────────────────────────────────────────
-        sendRpc("initialize", {
-          protocolVersion: "0.3",
-          clientInfo: { name: "9router", version: "1.0" },
-          capabilities: {},
+          // ── Streaming notifications (session/update) ──────────────────
+          if (msg.method === "session/update" || msg.method === "$/update") {
+            const params = msg.params;
+            if (!params) return;
+
+            // devin 3000.2.x nests the payload under params.update.sessionUpdate;
+            // older devin used a flat params.type.
+            const update = params.update || {};
+            const type = update.sessionUpdate || params.type;
+            const contentField = update.content !== undefined ? update.content : params.content;
+            const deltaText =
+              typeof contentField === "string"
+                ? contentField
+                : contentField?.text ?? params.delta ?? params.text ?? "";
+
+            // ── Client-tool bridge: devin calling a tool from our exposed MCP ──
+            // ACP title shape: "Calling mcp_<name> from clientTools".
+            // tool_call is upsert-by-id: title may only appear on the first event,
+            // rawInput on a later tool_call_update. Track pending ids so we don't
+            // require both fields on the same notification.
+            if (
+              hasClientTools &&
+              !toolUseEmitted &&
+              (type === "tool_call" || type === "tool_call_update")
+            ) {
+              const tcId = update.toolCallId;
+              if (typeof update.title === "string" && update.title.startsWith("Calling mcp_") && /from clientTools\b/.test(update.title)) {
+                const nameMatch = update.title.match(/^Calling (mcp_\S+)\b/);
+                const mcpName = nameMatch ? nameMatch[1] : "";
+                const origName = fromMcpToolName(mcpName);
+                if (tcId && origName) pendingClientTools.set(tcId, origName);
+              }
+              const origName = tcId ? pendingClientTools.get(tcId) : null;
+              if (origName && update.rawInput) {
+                toolUseEmitted = true;
+                pendingClientTools.delete(tcId);
+                emitToolUse(origName, update.rawInput, tcId || `call_${Date.now()}`);
+                finish(null, "tool_calls");
+              }
+              return;
+            }
+
+            if (type === "agent_message_chunk" || type === "message_delta" || type === "text_delta" || type === "content_delta") {
+              if (deltaText) emitDelta(deltaText);
+            } else if (type === "agent_thought_chunk") {
+              // Internal reasoning — not surfaced to the client.
+            } else if (type === "message_stop" || type === "stop" || type === "done") {
+              finish();
+            } else if (type === "error") {
+              finish(String(params.message || params.error || "Devin ACP error"));
+            }
+            return;
+          }
+
+          // ── Error responses ───────────────────────────────────────────
+          if (msg.error) {
+            finish(`Devin ACP error ${msg.error.code}: ${msg.error.message}`);
+          }
+        };
+        proc.handler.onClose = (code) => {
+          if (finished) return;
+          finish(roleEmitted || code === 0 ? undefined : `Devin CLI exited with code ${code}`);
+        };
+
+        try {
+          // `mcpServers` is required by devin 3000.2.x (must be a sequence);
+          // omitting it returns -32602. Server defs come from the process boot
+          // config (XDG), not this param — see the acpPool comment.
+          const res = await proc.rpc("session/new", {
+            cwd: workspaceCwd,
+            mcpServers: [],
+            model: model || undefined,
+          });
+          sessionId = res?.sessionId || null;
+          if (!sessionId) {
+            finish("Devin ACP: session/new returned no sessionId");
+            return;
+          }
+          // devin 3000.2.x expects `prompt` (a sequence), not `content` — using
+          // `content` returns -32602 "missing field prompt". The call resolves
+          // with the final result (stopReason) after streaming completes.
+          proc
+            .rpc("session/prompt", {
+              sessionId,
+              prompt: [{ type: "text", text: promptText }],
+            })
+            .then((res) => {
+              if (!roleEmitted) {
+                const content = extractResultText(res);
+                if (content) {
+                  totalText = content;
+                  emitDelta(content);
+                }
+                const stopReason = res?.stopReason || "";
+                if (stopReason && stopReason !== "cancelled") finish();
+              }
+            })
+            .catch((e) => {
+              finish(`Devin ACP error ${e.code}: ${e.message}`);
+            });
+        } catch (e) {
+          finish(`Devin ACP error ${e.code || ""}: ${e.message}`);
+        }
+        })().catch((e) => {
+          emit(
+            `data: ${JSON.stringify({ error: { message: `devin acp: ${e.message}`, type: "devin_cli_error" } })}\n\n`
+          );
+          emit("data: [DONE]\n\n");
+          try {
+            controller.close();
+          } catch {
+            /* ignore */
+          }
         });
       },
     });
