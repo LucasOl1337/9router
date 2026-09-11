@@ -84,8 +84,30 @@ const CLIENT_TOOLS_MCP_SCRIPT = `
 import readline from "node:readline";
 const TOOLS = JSON.parse(process.env.DEVIN_MCP_TOOLS || "[]");
 const RESULTS = JSON.parse(process.env.DEVIN_MCP_RESULTS || "{}");
+const SEEDS = JSON.parse(process.env.DEVIN_MCP_SEEDS || "{}");
 const rl = readline.createInterface({ input: process.stdin });
 function send(o){ process.stdout.write(JSON.stringify(o) + "\\n"); }
+function canon(v){
+  if (typeof v === "string") {
+    try { v = JSON.parse(v); } catch { return JSON.stringify(v); }
+  }
+  if (v === null || typeof v !== "object") return JSON.stringify(v ?? null);
+  if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]";
+  return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
+}
+function consumeSeed(name, args){
+  const list = SEEDS[name];
+  if (Array.isArray(list)) {
+    const key = canon(args ?? {});
+    const idx = list.findIndex((s) => canon(s.args) === key);
+    return idx >= 0 ? list.splice(idx, 1)[0].result : undefined;
+  }
+  if (Object.prototype.hasOwnProperty.call(RESULTS, name)) {
+    const legacy = RESULTS[name];
+    delete RESULTS[name];
+    return legacy;
+  }
+}
 rl.on("line", (line) => {
   let m; try { m = JSON.parse(line); } catch { return; }
   if (m.method === "initialize") {
@@ -94,11 +116,12 @@ rl.on("line", (line) => {
     send({ jsonrpc: "2.0", id: m.id, result: { tools: TOOLS } });
   } else if (m.method === "tools/call") {
     const name = m.params?.name || "";
-    const seeded = RESULTS[name];
+    const args = m.params?.arguments ?? m.params?.args ?? {};
+    const seeded = consumeSeed(name, args);
     const text = seeded !== undefined
       ? String(seeded)
       : "(awaiting client tool_result)";
-    process.stderr.write("[client-tools] tool_call name=" + name + " seeded=" + (seeded !== undefined) + "\\n");
+    process.stderr.write("[client-tools] tool_call name=" + name + " seeded=" + (seeded !== undefined) + " args=" + canon(args ?? {}) + "\\n");
     send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text }] } });
   }
 });
@@ -123,7 +146,7 @@ function fromMcpToolName(name) {
   return name.startsWith(MCP_TOOL_PREFIX) ? name.slice(MCP_TOOL_PREFIX.length) : name;
 }
 
-function buildClientToolsMcp(tools, resultMap) {
+function buildClientToolsMcp(tools, resultData) {
   const mcpTools = [];
   for (const t of tools) {
     if (!t) continue;
@@ -137,8 +160,13 @@ function buildClientToolsMcp(tools, resultMap) {
   }
   if (!mcpTools.length) return null;
   const env = { DEVIN_MCP_TOOLS: JSON.stringify(mcpTools) };
-  if (resultMap && Object.keys(resultMap).length) {
-    env.DEVIN_MCP_RESULTS = JSON.stringify(resultMap);
+  const results = resultData?.results || resultData || {};
+  const seeds = resultData?.seeds || {};
+  if (Object.keys(results).length) {
+    env.DEVIN_MCP_RESULTS = JSON.stringify(results);
+  }
+  if (Object.keys(seeds).length) {
+    env.DEVIN_MCP_SEEDS = JSON.stringify(seeds);
   }
   return {
     command: process.execPath,
@@ -147,48 +175,74 @@ function buildClientToolsMcp(tools, resultMap) {
   };
 }
 
+// Canonicalize tool args so a seeded result only answers the exact call the
+// client already executed. Key order and JSON-string-vs-object differences must
+// not make the same call look new.
+function canonicalJson(value) {
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return JSON.stringify(value);
+    }
+  }
+  if (value === null || typeof value !== "object") return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`)
+    .join(",")}}`;
+}
+
+function toolCallArgs(tc) {
+  return tc?.function?.arguments ?? tc?.arguments ?? tc?.input ?? {};
+}
+
+function rememberClientToolResult(idToCall, callId, content, results, seeds) {
+  const call = idToCall.get(callId);
+  if (!call) return;
+  const result = typeof content === "string" ? content : JSON.stringify(content ?? "");
+  results[call.mcpName] = result;
+  (seeds[call.mcpName] ||= []).push({ args: call.args ?? {}, result });
+}
+
 // Extract tool_result content keyed by MCP tool name (mcp_<original>).
-// Walks messages: assistant.tool_calls id→name, role=tool tool_call_id→content.
+// `results` keeps the legacy name→result map; `seeds` keeps name+args so a
+// seeded MCP call can be consumed without being bridged back to the client.
 function extractClientToolResults(messages) {
-  const idToMcpName = new Map();
+  const idToCall = new Map();
   const results = {};
+  const seeds = {};
   for (const m of messages) {
     if (m?.role === "assistant" && Array.isArray(m.tool_calls)) {
       for (const tc of m.tool_calls) {
         const name = tc?.function?.name || tc?.name;
-        if (tc?.id && name) idToMcpName.set(tc.id, toMcpToolName(name));
+        if (tc?.id && name) {
+          idToCall.set(tc.id, { mcpName: toMcpToolName(name), args: toolCallArgs(tc) });
+        }
       }
     }
     // Claude-style tool_use blocks in content
     if (m?.role === "assistant" && Array.isArray(m.content)) {
       for (const b of m.content) {
         if (b?.type === "tool_use" && b.id && b.name) {
-          idToMcpName.set(b.id, toMcpToolName(b.name));
+          idToCall.set(b.id, { mcpName: toMcpToolName(b.name), args: b.input ?? {} });
         }
       }
     }
     if (m?.role === "tool" && m.tool_call_id) {
-      const mcpName = idToMcpName.get(m.tool_call_id);
-      if (mcpName) {
-        results[mcpName] =
-          typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
-      }
+      rememberClientToolResult(idToCall, m.tool_call_id, m.content, results, seeds);
     }
     // Claude-style tool_result blocks in user content
     if (m?.role === "user" && Array.isArray(m.content)) {
       for (const b of m.content) {
         if (b?.type === "tool_result" && b.tool_use_id) {
-          const mcpName = idToMcpName.get(b.tool_use_id);
-          if (mcpName) {
-            const c = b.content;
-            results[mcpName] =
-              typeof c === "string" ? c : JSON.stringify(c ?? "");
-          }
+          rememberClientToolResult(idToCall, b.tool_use_id, b.content, results, seeds);
         }
       }
     }
   }
-  return results;
+  return { results, seeds };
 }
 
 // Resolve workspace cwd from client request (Codex/CLI env context, body fields).
@@ -298,6 +352,76 @@ function buildPromptText(messages) {
     }
   }
   return lines.join("\n\n") || "(empty)";
+}
+
+// ─── Prompt images ──────────────────────────────────────────────────────────
+// ACP accepts image blocks as base64 (`{type:"image",data,mimeType,uri?}`). The
+// OpenAI-facing request may carry data URLs or remote URLs; fetch remote ones
+// here so the agent receives real bytes instead of a URL it cannot open.
+const IMAGE_FETCH_TIMEOUT_MS = 10000;
+const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+function parseDataImage(url) {
+  const m = /^data:(image\/[\w.+-]+);base64,([\s\S]+)$/i.exec(String(url || ""));
+  return m ? { data: m[2].replace(/\s+/g, ""), mimeType: m[1] } : null;
+}
+
+function imageReference(part) {
+  if (!part || typeof part !== "object") return null;
+  const source = part.source || {};
+  if (source.type === "base64" && source.data) {
+    return { data: source.data, mimeType: source.media_type || source.mimeType || "image/png" };
+  }
+  if (part.data && (part.mimeType || part.media_type)) {
+    return { data: part.data, mimeType: part.mimeType || part.media_type };
+  }
+  const url =
+    part.image_url?.url ||
+    (typeof part.image_url === "string" ? part.image_url : null) ||
+    part.image?.url ||
+    (typeof part.image === "string" ? part.image : null) ||
+    source.url ||
+    part.url;
+  return url ? { url } : null;
+}
+
+function isImagePart(part) {
+  return ["image", "image_url", "input_image"].includes(String(part?.type || ""));
+}
+
+async function fetchImageReference(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`image fetch failed: HTTP ${res.status}`);
+  const mimeType = (res.headers.get("content-type") || "image/png").split(";")[0].trim();
+  if (!mimeType.startsWith("image/")) throw new Error(`image fetch returned ${mimeType}`);
+  const bytes = Buffer.from(await res.arrayBuffer());
+  if (bytes.length > IMAGE_MAX_BYTES) throw new Error("image exceeds 5 MB");
+  return { data: bytes.toString("base64"), mimeType };
+}
+
+async function buildPromptBlocks(messages, promptText, log) {
+  const blocks = [{ type: "text", text: promptText }];
+  let failed = 0;
+  for (const m of messages) {
+    const parts = Array.isArray(m?.content) ? m.content : [];
+    for (const part of parts) {
+      if (!isImagePart(part)) continue;
+      try {
+        const ref = imageReference(part);
+        if (!ref) throw new Error("unsupported image part");
+        const parsed = ref.url ? parseDataImage(ref.url) : null;
+        const image = parsed || (ref.data ? ref : await fetchImageReference(ref.url));
+        blocks.push({ type: "image", data: image.data, mimeType: image.mimeType, uri: ref.url });
+      } catch (e) {
+        failed++;
+        log?.info?.("DEVIN", `image part skipped: ${e.message}`);
+      }
+    }
+  }
+  if (failed) {
+    blocks[0].text += `\n\n[${failed} attached image(s) could not be fetched; answer from the text and say the image did not arrive.]`;
+  }
+  return blocks;
 }
 
 // ─── ACP process pool ─────────────────────────────────────────────────────────
@@ -590,28 +714,34 @@ export class DevinCliExecutor extends BaseExecutor {
     const hasClientTools = !!clientToolsMcp;
     if (clientToolsMcp) {
       mcpServers["clientTools"] = clientToolsMcp;
-      const seeded = Object.keys(clientToolResults).length;
+      const seeded = Object.keys(clientToolResults.results || {}).length;
       log?.info?.(
         "DEVIN",
         `exposing ${clientTools.length} client tool(s) as MCP` +
           (seeded ? ` (seeded ${seeded} result(s))` : "")
       );
     }
-    // Pool-stable variant: seeded DEVIN_MCP_RESULTS are per-request data (a
-    // warm process would serve stale values to later requests), so pooled
-    // configs drop them — results still reach the agent inlined in the prompt.
+    // Pool-stable variant: seeded client-tool results stay in the signature so
+    // a warm MCP process can only answer calls for the result set it booted with.
     const mcpServersStable = { ...mcpServers };
-    if (mcpServersStable.clientTools?.env) {
-      const stableEnv = { ...mcpServersStable.clientTools.env };
-      delete stableEnv.DEVIN_MCP_RESULTS;
-      mcpServersStable.clientTools = { ...mcpServersStable.clientTools, env: stableEnv };
-    }
 
     // Agent type: default (omitted) = full agent with built-in tools
     // (fs/shell/search) so the model can actually perform tasks. Override to
     // `summarizer` (no tools, text-only) via CLI_DEVIN_AGENT_TYPE for a safer,
     // tool-less mode. WARNING: the default agent can run shell commands and
     // modify the filesystem on the host running 9router — only expose locally.
+    if (hasClientTools) {
+      promptText =
+        "[System]\nVocê é o backend de chat desta requisição. Para ações do produto, use somente as tools mcp_* expostas pelo servidor clientTools; não use filesystem, shell ou web para tarefas que uma tool mcp_* já cobre. Chame a tool diretamente e continue o roteiro com o resultado recebido.\n\n" +
+        promptText;
+    }
+    let promptBlocks = [{ type: "text", text: promptText }];
+    try {
+      promptBlocks = await buildPromptBlocks(messages, promptText, log);
+    } catch (e) {
+      log?.info?.("DEVIN", `prompt image extraction failed: ${e.message}`);
+    }
+
     const agentType = process.env.CLI_DEVIN_AGENT_TYPE?.trim();
     const acpArgs = ["acp"];
     if (agentType) acpArgs.push("--agent-type", agentType);
@@ -696,6 +826,20 @@ export class DevinCliExecutor extends BaseExecutor {
         // ACP tool_call is upsert-by-id: the first event has title, a later update
         // may only carry rawInput (title omitted). Track pending client-tool calls.
         const pendingClientTools = new Map(); // toolCallId → original tool name
+        const seededClientCalls = new Map(
+          Object.entries(clientToolResults.seeds || {}).map(([name, seeds]) => [
+            name,
+            seeds.map((s) => canonicalJson(s.args)),
+          ])
+        );
+        const consumeSeededClientCall = (origName, args) => {
+          const keys = seededClientCalls.get(toMcpToolName(origName));
+          if (!keys?.length) return false;
+          const idx = keys.indexOf(canonicalJson(args ?? {}));
+          if (idx < 0) return false;
+          keys.splice(idx, 1);
+          return true;
+        };
         let bufferedToolCall = null; // nonStream: {id, name, argsStr}
         const emitToolUse = (toolName, args, toolCallId) => {
           const argsStr = typeof args === "string" ? args : JSON.stringify(args ?? {});
@@ -950,9 +1094,14 @@ export class DevinCliExecutor extends BaseExecutor {
                 if (tcId && origName) pendingClientTools.set(tcId, origName);
               }
               const origName = tcId ? pendingClientTools.get(tcId) : null;
-              if (origName && update.rawInput) {
-                toolUseEmitted = true;
+              if (origName && update.rawInput !== undefined) {
                 pendingClientTools.delete(tcId);
+                if (consumeSeededClientCall(origName, update.rawInput)) {
+                  // Re-call of a tool whose result came back in this request:
+                  // the MCP shim returns the real result and the turn continues.
+                  return;
+                }
+                toolUseEmitted = true;
                 emitToolUse(origName, update.rawInput, tcId || `call_${Date.now()}`);
                 finish(null, "tool_calls");
               }
@@ -1001,7 +1150,7 @@ export class DevinCliExecutor extends BaseExecutor {
           proc
             .rpc("session/prompt", {
               sessionId,
-              prompt: [{ type: "text", text: promptText }],
+              prompt: promptBlocks,
             })
             .then((res) => {
               if (!roleEmitted) {
@@ -1053,7 +1202,8 @@ export class DevinCliExecutor extends BaseExecutor {
         model,
         cwd: workspaceCwd,
         clientTools: clientTools.map((t) => t?.function?.name || t?.name).filter(Boolean),
-        clientToolResults: Object.keys(clientToolResults),
+        clientToolResults: Object.keys(clientToolResults.results || {}),
+        promptBlocks: promptBlocks.map((b) => b.type),
         mcpServers: Object.keys(mcpServers),
         promptLength: Array.isArray(body?.messages)
           ? body.messages.length
