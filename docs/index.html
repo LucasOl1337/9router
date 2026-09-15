@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>9Router: um endpoint local, o resto é fallback</title>
+<meta name="description" content="Gateway local compatível com OpenAI. Um endereço /v1 para Claude Code, Codex, Cursor e Cline. Combo de fallback, RTK e dashboard. MIT, npm 9router.">
+<meta property="og:title" content="9Router: um endpoint. O resto é fallback.">
+<meta property="og:description" content="Gateway local OpenAI-compatible. Providers, combo, RTK. Roda na sua máquina.">
+<meta property="og:image" content="media/poster.jpg">
+<meta property="og:type" content="website">
+<link rel="icon" href="media/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#181411;--sf:#23180f;--sf2:#2b2118;--sf3:#3a2f27;--bd:#3a2f27;--bds:#5a4638;
+  --ink:#f7f3ee;--ink2:#d4c8bc;--ink3:#9a8b7c;--acc:#E56A4A;--acch:#cc5236;--acct:#ee8d6a;--gra:#181411;
+  --max:1120px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,"Noto Sans","Segoe UI",system-ui,sans-serif;font-size:17px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--acct);text-decoration:none}a:hover{text-decoration:underline}
+.wrap{max-width:var(--max);margin:0 auto;padding:0 24px}
+code,.mono{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+.nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
+.brand{display:flex;align-items:center;gap:12px;font-weight:600;letter-spacing:.18em;font-size:14px;color:var(--ink)}
+.brand img{width:34px;height:34px;border-radius:9px}
+.nav .links{display:flex;gap:22px;font-size:14px;color:var(--ink3)}
+.nav .links a{color:var(--ink3)}.nav .links a:hover{color:var(--ink);text-decoration:none}
+.btn{display:inline-flex;align-items:center;gap:10px;padding:13px 22px;border-radius:12px;font-weight:600;font-size:15px;border:1px solid transparent;transition:.15s}
+.btn.acc{background:var(--acc);color:#fff}.btn.acc:hover{background:var(--acch);text-decoration:none}
+.btn.ghost{border-color:var(--bds);color:var(--ink2)}.btn.ghost:hover{background:var(--sf2);text-decoration:none;color:var(--ink)}
+.hero{padding:70px 0 40px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
+.k{font-size:13px;letter-spacing:.26em;font-weight:600;color:var(--ink3);text-transform:uppercase;margin:0 0 18px}
+h1{font-size:clamp(40px,5.6vw,70px);line-height:1.04;letter-spacing:-.025em;margin:0 0 22px;font-weight:800}
+h1 b{color:var(--acc);font-weight:800}
+.lead{font-size:20px;color:var(--ink2);max-width:520px;margin:0 0 30px}
+.cta{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.cta small{color:var(--ink3);font-size:13px;width:100%;margin-top:4px}
+.video{position:relative;border-radius:16px;overflow:hidden;background:#000;border:1px solid var(--bd);box-shadow:0 30px 80px rgba(0,0,0,.45)}
+.video video{display:block;width:100%;height:auto}
+.vcap{color:var(--ink3);font-size:13.5px;margin:10px 0 0}
+.pillars{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:56px 0 0}
+.card{background:var(--sf);border:1px solid var(--bd);border-radius:16px;padding:26px 26px 24px}
+.card h3{margin:14px 0 8px;font-size:20px;letter-spacing:-.01em}
+.card p{margin:0;color:var(--ink3);font-size:15.5px}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 8px rgba(229,106,74,.14)}
+section{padding:84px 0 0}
+h2{font-size:clamp(30px,4vw,44px);line-height:1.08;letter-spacing:-.02em;margin:0 0 14px;font-weight:800}
+.sub{color:var(--ink3);font-size:18px;max-width:680px;margin:0 0 34px}
+.feat{display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:center;margin-top:40px}
+.feat.rev .shot{order:-1}
+.feat h3{font-size:26px;letter-spacing:-.015em;margin:0 0 10px}
+.feat p{color:var(--ink2);margin:0 0 12px}
+.feat ul{margin:12px 0 0;padding-left:18px;color:var(--ink2)}
+.feat li{margin:6px 0}
+.shot{border-radius:14px;overflow:hidden;border:1px solid var(--bd);background:var(--sf);box-shadow:0 24px 60px rgba(0,0,0,.4)}
+.shot img{display:block;width:100%;height:auto}
+.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:36px}
+.step{background:var(--sf);border:1px solid var(--bd);border-radius:14px;padding:22px}
+.step .n{font-family:"JetBrains Mono",monospace;color:var(--acct);font-size:13px;margin-bottom:10px}
+.step h4{margin:0 0 6px;font-size:17px}.step p{margin:0;color:var(--ink3);font-size:14.5px}
+.nums{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:36px}
+.num{background:var(--sf2);border-radius:14px;padding:22px}
+.num b{display:block;font-size:34px;letter-spacing:-.02em;font-weight:800}
+.num span{color:var(--ink3);font-size:14px}
+table{width:100%;border-collapse:collapse;margin-top:34px;background:var(--sf);border:1px solid var(--bd);border-radius:16px;overflow:hidden}
+th,td{padding:15px 18px;text-align:left;border-bottom:1px solid var(--bd);font-size:15.5px;vertical-align:top}
+th{color:var(--ink3);font-weight:600;font-size:13px;letter-spacing:.14em;text-transform:uppercase;background:var(--sf2)}
+tr:last-child td{border-bottom:0}
+td.y{color:var(--ink)}td.n{color:var(--ink3)}
+td:first-child{color:var(--ink2);width:28%}
+.foot-note{color:var(--ink3);font-size:13.5px;margin-top:12px}
+pre{background:var(--sf);border:1px solid var(--bd);border-radius:14px;padding:20px 22px;overflow:auto;font-size:14px;line-height:1.6;color:var(--ink2);margin:0}
+pre .c{color:var(--ink3)}pre .a{color:var(--acct)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:30px}
+.two h4{margin:0 0 10px;font-size:14px;letter-spacing:.16em;color:var(--ink3);text-transform:uppercase}
+footer{margin-top:96px;padding:40px 0 60px;border-top:1px solid var(--bd);color:var(--ink3);font-size:14px;display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.reveal{opacity:0;transform:translateY(14px);transition:opacity .6s ease,transform .6s ease}
+.reveal.in{opacity:1;transform:none}
+@media (max-width:900px){
+  .hero{grid-template-columns:1fr;padding-top:36px}
+  .pillars,.flow,.nums,.two{grid-template-columns:1fr 1fr}
+  .feat{grid-template-columns:1fr}.feat.rev .shot{order:0}
+  .nav .links{display:none}
+}
+@media (max-width:560px){.pillars,.flow,.nums,.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav">
+    <a class="brand" href="#"><img src="media/favicon.svg" alt="">9ROUTER</a>
+    <div class="links">
+      <a href="#como">Como funciona</a>
+      <a href="#telas">Telas</a>
+      <a href="#numeros">Números</a>
+      <a href="#compare">Comparar</a>
+      <a href="#instalar">Instalar</a>
+      <a href="https://github.com/LucasOl1337/9router">GitHub ↗</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <p class="k">Gateway local · OpenAI-compatible · v0.5.60</p>
+      <h1>Um endpoint.<br>O <b>resto</b> é fallback.</h1>
+      <p class="lead">Claude Code, Codex, Cursor, Cline. Todos falam com <code>/v1</code> na sua máquina. O 9Router escolhe o provider, traduz o formato e troca de conta quando a cota acaba.</p>
+      <div class="cta">
+        <a class="btn acc" href="#instalar">Instalar com npm</a>
+        <a class="btn ghost" href="https://github.com/LucasOl1337/9router">Ver o código</a>
+        <small>Atualizado em 15 de setembro de 2026. MIT. Site de produto: <a href="https://9router.com">9router.com</a>.</small>
+      </div>
+    </div>
+    <div>
+      <div class="video">
+        <video controls playsinline preload="metadata" poster="media/poster.jpg">
+          <source src="media/9router-promo-web.mp4" type="video/mp4">
+        </video>
+      </div>
+      <p class="vcap">Narração: Lucas Oliveira, OFICIAL #1 (OmniVoice, 15/09/2026). Gravação do dashboard e de um POST real numa instância isolada, porta 20138. Sem UI inventada.</p>
+    </div>
+  </header>
+
+  <div class="pillars">
+    <div class="card reveal"><div class="dot"></div><h3>Um /v1 só</h3><p>O CLI aponta para localhost:20128/v1. Chat, fallback e chave ficam no gateway, não espalhados em cada ferramenta.</p></div>
+    <div class="card reveal"><div class="dot"></div><h3>Combo de verdade</h3><p>Uma fila de modelos. Acabou a cota, o próximo pega. Sem você trocar de endpoint no meio da sessão.</p></div>
+    <div class="card reveal"><div class="dot"></div><h3>RTK no caminho</h3><p>Comprime <code>tool_result</code> (git diff, grep, ls) antes do prompt. Fail-open: se der erro, o body segue intacto.</p></div>
+  </div>
+
+  <section id="como">
+    <h2>Como funciona</h2>
+    <p class="sub">Instala, conecta um provider, cola o endpoint no CLI. O pedido entra OpenAI-compatible e sai no formato que o upstream pede.</p>
+    <div class="flow">
+      <div class="step reveal"><div class="n">01</div><h4>Sobe o gateway</h4><p><code>npm i -g 9router</code> e <code>9router</code>. Dashboard em localhost:20128.</p></div>
+      <div class="step reveal"><div class="n">02</div><h4>Conecta um provider</h4><p>OAuth, API key ou um nó OpenAI-compatible. O catálogo está na tela Providers.</p></div>
+      <div class="step reveal"><div class="n">03</div><h4>Aponta o CLI</h4><p>Claude Code, Codex, Cursor, Cline: base URL <code>http://localhost:20128/v1</code>.</p></div>
+      <div class="step reveal"><div class="n">04</div><h4>Deixa o combo trabalhar</h4><p>Se o primeiro modelo recusar, o próximo da lista entra. Usage registra o que passou.</p></div>
+    </div>
+  </section>
+
+  <section id="telas">
+    <h2>O que você vê no dashboard</h2>
+    <p class="sub">Capturas de 15/09/2026, instância isolada em 127.0.0.1:20138. Tema dark do próprio app. Nada de mockup.</p>
+
+    <div class="feat">
+      <div>
+        <h3>Endpoint e chave</h3>
+        <p>O endereço local e a API key que o CLI vai usar. Nesta gravação: <code>http://127.0.0.1:20138/v1</code> e a chave <code>vitrine-demo</code>.</p>
+        <ul>
+          <li>Porta padrão do produto é 20128, documentada no README</li>
+          <li>Tunnel e Tailscale só ligam depois de senha própria no dashboard</li>
+        </ul>
+      </div>
+      <div class="shot reveal"><img src="media/endpoint.png" alt="Tela Endpoint do 9Router com URL local e chave vitrine-demo"></div>
+    </div>
+
+    <div class="feat rev">
+      <div>
+        <h3>Providers</h3>
+        <p>OAuth, free tier, API key e nós OpenAI-compatible. Nesta instância o nó Local Demo está com 1 conexão testada; o resto do catálogo aparece sem conta, como um install novo.</p>
+        <ul>
+          <li>122 arquivos de provider em <code>open-sse/providers/registry/</code> (contagem em 15/09/2026, sem o index)</li>
+          <li>O README deste repo ainda descreve o conjunto como “40+”</li>
+        </ul>
+      </div>
+      <div class="shot reveal"><img src="media/providers.png" alt="Tela Providers do 9Router com Local Demo conectado e o catálogo OAuth e free tier"></div>
+    </div>
+
+    <div class="feat">
+      <div>
+        <h3>Um POST de verdade</h3>
+        <p>Não é tela fingida. <code>curl</code> no <code>/v1/chat/completions</code>, model <code>local/demo</code>, stream SSE. O gateway roteou para um nó OpenAI-compatible local. A resposta volta em chunks.</p>
+        <ul>
+          <li>Pedido medido: 3 requests, 72 input tokens, 96 output tokens, custo estimado $0.00</li>
+          <li>Nó de demo, sem cota paga. A edição não inventa transcrição.</li>
+        </ul>
+      </div>
+      <div class="shot reveal"><img src="media/curl-end.png" alt="Terminal com o stream SSE de um POST /v1/chat/completions roteado pelo 9Router"></div>
+    </div>
+
+    <div class="feat rev">
+      <div>
+        <h3>Usage</h3>
+        <p>O mesmo pedido aparece no dashboard: modelo <code>demo</code>, 24↑ 32↓ por chamada, grafo com o nó Local Demo ligado ao 9Router.</p>
+        <ul>
+          <li>Números da captura de 15/09/2026, não de um dataset de marketing</li>
+        </ul>
+      </div>
+      <div class="shot reveal"><img src="media/usage.png" alt="Tela Usage com 3 requests, 72 tokens de entrada e o nó Local Demo"></div>
+    </div>
+
+    <div class="feat">
+      <div>
+        <h3>Token Saver (RTK)</h3>
+        <p>Liga a compressão de output de ferramenta. A UI do app ainda escreve “60-90% fewer input tokens”. A medição desta vitrine, no próprio repositório, deu outra faixa. Os dois ficam abaixo, com fonte.</p>
+        <ul>
+          <li>Fail-open: erro no filtro devolve null e o body segue</li>
+          <li>Caveman e Headroom existem; nesta demo só o RTK está on</li>
+        </ul>
+      </div>
+      <div class="shot reveal"><img src="media/tokensaver.png" alt="Tela Token Saver com RTK ligado"></div>
+    </div>
+
+    <div class="feat rev">
+      <div>
+        <h3>Combos</h3>
+        <p>Um nome, uma fila. Fallback tenta na ordem. Round robin espalha. Fusion dispara em paralelo (e cobra todos). Nesta demo: combo <code>demo-local</code> com <code>local/demo</code>.</p>
+      </div>
+      <div class="shot reveal"><img src="media/combos.png" alt="Tela Combos com o combo demo-local em fallback"></div>
+    </div>
+
+    <div class="feat">
+      <div>
+        <h3>CLI Tools</h3>
+        <p>Presets de endpoint por ferramenta. Nesta captura a página lista 16 ferramentas e 3 pontes MITM (Antigravity, GitHub Copilot, Kiro). jcode aparece Connected nesta máquina; o resto é o estado real do install de demo.</p>
+      </div>
+      <div class="shot reveal"><img src="media/clitools.png" alt="Tela CLI Tools com os cards de Claude Code, Codex, Cursor e MITM"></div>
+    </div>
+  </section>
+
+  <section id="numeros">
+    <h2>Números com fonte</h2>
+    <p class="sub">Sem “60+ providers” inflado. O que cabe numa frase e dá para conferir no repo ou no log da demo.</p>
+    <div class="nums">
+      <div class="num reveal"><b>122</b><span>módulos em open-sse/providers/registry, 15/09/2026 (sem index.js). O README descreve “40+”.</span></div>
+      <div class="num reveal"><b>7,7–70%</b><span>bytes de tool_result poupados pelo filtro git-diff/git-log neste repo, 15/09/2026. Quatro blobs reais.</span></div>
+      <div class="num reveal"><b>3 / 72 / 96</b><span>requests / input / output tokens na instância isolada da vitrine, 15/09/2026.</span></div>
+      <div class="num reveal"><b>MIT</b><span>licença do repositório. npm <code>9router</code> 0.5.60, porta padrão 20128.</span></div>
+    </div>
+    <p class="foot-note">RTK, casos de 15/09/2026 neste worktree: <code>git show HEAD</code> 7,7%; <code>git show HEAD~5</code> 27%; <code>git diff HEAD~10 HEAD -- CHANGELOG.md</code> 18,5%; <code>git log -p -n 3 -- open-sse/rtk/</code> 70,3%. O README afirma “save 20-40% tokens with RTK”; isso é a faixa documentada pelo projeto, não a medição desta página. A UI do Token Saver ainda mostra “60-90%”; não repetimos esse número aqui.</p>
+  </section>
+
+  <section id="compare">
+    <h2>Onde o 9Router se encaixa</h2>
+    <p class="sub">Não é o site de marketing. É o recorte honesto contra um gateway hospedado, um proxy Python e o CLI falando direto com um provider.</p>
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th>9Router</th>
+          <th>OpenRouter</th>
+          <th>LiteLLM Proxy</th>
+          <th>CLI direto</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Onde roda</td>
+          <td class="y">Na sua máquina (npm / source). Dashboard local.</td>
+          <td class="n">Hospedado. Não é self-host.</td>
+          <td class="y">Self-host (Python / Docker), porta 4000 no doc oficial.</td>
+          <td class="n">Cada ferramenta no provider dela.</td>
+        </tr>
+        <tr>
+          <td>API</td>
+          <td class="y">OpenAI-compatible <code>/v1</code>, porta 20128.</td>
+          <td class="y">OpenAI-compatible hospedada.</td>
+          <td class="y">OpenAI-compatible no proxy.</td>
+          <td class="n">Formato de cada vendor.</td>
+        </tr>
+        <tr>
+          <td>Fallback</td>
+          <td class="y">Combo por modelo, várias contas, quota no dashboard.</td>
+          <td class="y">Routing e fallback no serviço deles.</td>
+          <td class="y">Config de fallback no proxy.</td>
+          <td class="n">Você troca na mão.</td>
+        </tr>
+        <tr>
+          <td>Providers</td>
+          <td class="y">122 módulos neste tree (15/09/2026). README: 40+.</td>
+          <td class="y">“400+ models / 70+ providers” no blog deles, jun/2026.</td>
+          <td class="y">Docs falam em 100+ providers.</td>
+          <td class="n">Um por ferramenta.</td>
+        </tr>
+        <tr>
+          <td>Token saver de tool_result</td>
+          <td class="y">RTK no caminho, fail-open.</td>
+          <td class="n">Não é o produto.</td>
+          <td class="n">Não é o produto.</td>
+          <td class="n">Não.</td>
+        </tr>
+        <tr>
+          <td>CLI / IDE</td>
+          <td class="y">Página de presets. 16 tools + 3 MITM nesta captura.</td>
+          <td class="y">Qualquer cliente OpenAI.</td>
+          <td class="y">Qualquer cliente OpenAI.</td>
+          <td class="y">Nativo, um vendor.</td>
+        </tr>
+        <tr>
+          <td>Custo da camada</td>
+          <td class="y">Software MIT, sem markup. Você paga o upstream.</td>
+          <td class="n">Pay-as-you-go; 5,5% em créditos no blog de jun/2026.</td>
+          <td class="y">Open source; infra é sua.</td>
+          <td class="y">Só o provider.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="foot-note">
+      Fontes datadas:
+      9Router, este repositório e capturas em 15/09/2026 (<a href="https://github.com/LucasOl1337/9router/blob/main/README.md">README</a>, <a href="https://github.com/LucasOl1337/9router/blob/main/CHANGELOG.md">CHANGELOG</a>, <code>open-sse/providers/registry</code>);
+      OpenRouter, artigo “LLM Gateway: What It Is and How to Choose One”, 11/06/2026, <a href="https://openrouter.ai/blog/insights/llm-gateway/">openrouter.ai/blog/insights/llm-gateway</a>;
+      LiteLLM, <a href="https://docs.litellm.ai/docs/providers/openai_compatible">docs de endpoint OpenAI-compatible</a> (página vista em 14/09/2026).
+      Se o número do concorrente mudou, o link é o da data.
+    </p>
+  </section>
+
+  <section id="instalar">
+    <h2>Instalar</h2>
+    <p class="sub">O caminho de produto é o pacote npm. Este repositório (<code>9router-app</code>) é o dashboard + gateway; o launcher publicado é o pacote <code>9router</code>.</p>
+    <div class="two">
+      <div>
+        <h4>npm (uso normal)</h4>
+        <pre><span class="c"># instala o launcher</span>
+<span class="a">npm install -g 9router</span>
+<span class="a">9router</span>
+
+<span class="c"># dashboard: http://localhost:20128</span>
+<span class="c"># API:       http://localhost:20128/v1</span></pre>
+      </div>
+      <div>
+        <h4>Deste repositório</h4>
+        <pre><span class="c"># o package da raiz é privado</span>
+cp .env.example .env
+npm install
+PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run dev</pre>
+      </div>
+    </div>
+    <p class="foot-note">Depois: Dashboard → Providers → conecta um provider. No CLI, cola <code>http://localhost:20128/v1</code> e a chave da tela Endpoint. Senha inicial: variável <code>INITIAL_PASSWORD</code> (não deixe 123456 se a instância sair do localhost). Esta página não aponta para GitHub Releases; o install é npm.</p>
+  </section>
+
+  <footer>
+    <div>9Router · MIT · captura e página em 15/09/2026 · <a href="https://github.com/LucasOl1337">LucasOl1337</a></div>
+    <div>
+      <a href="https://github.com/LucasOl1337/9router">GitHub</a> ·
+      <a href="https://github.com/LucasOl1337/9router/blob/main/CHANGELOG.md">Changelog</a> ·
+      <a href="https://9router.com">9router.com</a>
+    </div>
+  </footer>
+</div>
+<script>
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.15});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>
