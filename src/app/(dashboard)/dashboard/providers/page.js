@@ -26,7 +26,7 @@ import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import ModelAvailabilityBadge from "./components/ModelAvailabilityBadge";
 import AddCompatibleModal from "./components/AddCompatibleModal";
 
-function getStatusDisplay(connected, error, errorCode) {
+function getStatusDisplay(connected, error, errorCode, total = 0) {
   const parts = [];
   if (connected > 0) {
     parts.push(
@@ -46,6 +46,13 @@ function getStatusDisplay(connected, error, errorCode) {
     );
   }
   if (parts.length === 0) {
+    if (total > 0) {
+      return (
+        <span className="text-text-muted">
+          {total} {total === 1 ? "account" : "accounts"}
+        </span>
+      );
+    }
     return <span className="text-text-muted">No connections</span>;
   }
   return parts;
@@ -713,7 +720,7 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
                   <Badge variant="success" size="sm" dot>Ready</Badge>
                 ) : (
                   <>
-                    {getStatusDisplay(connected, error, errorCode)}
+                    {getStatusDisplay(connected, error, errorCode, stats.total)}
                     {errorTime && (
                       <span className="text-text-muted">{errorTime}</span>
                     )}
@@ -758,6 +765,7 @@ ProviderCard.propTypes = {
   stats: PropTypes.shape({
     connected: PropTypes.number,
     error: PropTypes.number,
+    total: PropTypes.number,
     errorCode: PropTypes.string,
     errorTime: PropTypes.string,
   }).isRequired,
@@ -839,7 +847,7 @@ function ApiKeyProviderCard({
                   </Badge>
                 ) : (
                   <>
-                    {getStatusDisplay(connected, error, errorCode)}
+                    {getStatusDisplay(connected, error, errorCode, stats.total)}
                     {isCompatible && (
                       <Badge variant="default" size="sm">
                         {provider.apiType === "responses"
@@ -897,6 +905,7 @@ ApiKeyProviderCard.propTypes = {
   stats: PropTypes.shape({
     connected: PropTypes.number,
     error: PropTypes.number,
+    total: PropTypes.number,
     errorCode: PropTypes.string,
     errorTime: PropTypes.string,
   }).isRequired,
