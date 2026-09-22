@@ -30,7 +30,8 @@ export default function UsageChart({ period = "7d" }) {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/usage/chart?period=${period}`);
+      const timezoneOffset = new Date().getTimezoneOffset();
+      const res = await fetch(`/api/usage/chart?period=${period}&timezoneOffset=${timezoneOffset}`);
       if (res.ok) {
         const json = await res.json();
         setData(json);
@@ -43,7 +44,12 @@ export default function UsageChart({ period = "7d" }) {
   }, [period]);
 
   useEffect(() => {
-    fetchData();
+    const initialTimer = setTimeout(fetchData, 0);
+    const timer = setInterval(fetchData, 30000);
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(timer);
+    };
   }, [fetchData]);
 
   const hasData = data.some((d) => d.tokens > 0 || d.cost > 0);
