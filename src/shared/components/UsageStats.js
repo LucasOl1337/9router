@@ -115,7 +115,7 @@ function sortData(dataMap, pendingMap = {}, sortBy, sortOrder) {
     });
 }
 
-function getGroupKey(item, keyField) {
+function getGroupLabel(item, keyField) {
   switch (keyField) {
     case "rawModel": return item.rawModel || "Unknown Model";
     case "accountName": return item.accountName || `Account ${item.connectionId?.slice(0, 8)}...` || "Unknown Account";
@@ -123,6 +123,10 @@ function getGroupKey(item, keyField) {
     case "endpoint": return item.endpoint || "Unknown Endpoint";
     default: return item[keyField] || "Unknown";
   }
+}
+
+function getGroupKey(item, keyField) {
+  return `${item.origin || "Local"}|${getGroupLabel(item, keyField)}`;
 }
 
 function groupDataByKey(data, keyField) {
@@ -133,6 +137,8 @@ function groupDataByKey(data, keyField) {
     if (!groups[gk]) {
       groups[gk] = {
         groupKey: gk,
+        groupLabel: getGroupLabel(item, keyField),
+        origin: item.origin || "Local",
         summary: { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, totalTokens: 0, cost: 0, inputCost: 0, cachedCost: 0, outputCost: 0, lastUsed: null, pending: 0 },
         items: [],
       };
@@ -345,7 +351,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           emptyMessage: "No usage recorded yet.",
           renderSummaryCells: (group) => (
             <>
-              <td className="px-6 py-3 text-text-muted">—</td>
+              <td className="px-6 py-3"><Badge variant="default" size="sm">{group.origin}</Badge></td>
               <td className="px-6 py-3 text-text-muted">—</td>
               <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
               <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
@@ -380,7 +386,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           emptyMessage: "No account-specific usage recorded yet.",
           renderSummaryCells: (group) => (
             <>
-              <td className="px-6 py-3 text-text-muted">—</td>
+              <td className="px-6 py-3"><Badge variant="default" size="sm">{group.origin}</Badge></td>
               <td className="px-6 py-3 text-text-muted">—</td>
               <td className="px-6 py-3 text-text-muted">—</td>
               <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
@@ -407,7 +413,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           emptyMessage: "No API key usage recorded yet.",
           renderSummaryCells: (group) => (
             <>
-              <td className="px-6 py-3 text-text-muted">—</td>
+              <td className="px-6 py-3"><Badge variant="default" size="sm">{group.origin}</Badge></td>
               <td className="px-6 py-3 text-text-muted">—</td>
               <td className="px-6 py-3 text-text-muted">—</td>
               <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
@@ -435,7 +441,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           emptyMessage: "No endpoint usage recorded yet.",
           renderSummaryCells: (group) => (
             <>
-              <td className="px-6 py-3 text-text-muted">—</td>
+              <td className="px-6 py-3"><Badge variant="default" size="sm">{group.origin}</Badge></td>
               <td className="px-6 py-3 text-text-muted">—</td>
               <td className="px-6 py-3 text-text-muted">—</td>
               <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
