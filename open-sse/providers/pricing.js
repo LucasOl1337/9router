@@ -29,8 +29,13 @@ export const MODEL_PRICING = {
   "claude-opus-4-5-thinking":     { input: 5.00,  output: 25.00, cached: 0.50,  reasoning: 37.50,  cache_creation: 5.00  },
   "claude-opus-4-6-thinking":     { input: 5.00,  output: 25.00, cached: 0.50,  reasoning: 37.50,  cache_creation: 5.00  },
   "claude-fable-5":               { input: 10.00, output: 50.00, cached: 1.00,  reasoning: 50.00,  cache_creation: 12.50 },
+  "claude-opus-5-5":              { input: 4.00,  output: 20.00, cached: 0.20,  reasoning: 20.00,  cache_creation: 5.00 },
 
   // === OpenAI / GPT ===
+  "gpt-6-astra":                { input: 10.00, output: 50.00, cached: 1.00, reasoning: 50.00, cache_creation: 12.50 },
+  "gpt-6-sol":                  { input: 2.00, output: 10.00, cached: 0.20, reasoning: 10.00, cache_creation: 2.50 },
+  "gpt-6-luna":                 { input: 0.10, output: 0.50, cached: 0.01, reasoning: 0.50, cache_creation: 0.125 },
+  "grok-4.7":                   { input: 2.00, output: 6.00, cached: 0.50, reasoning: 6.00, cache_creation: 2.00 },
   "gpt-3.5-turbo":                { input: 0.50,  output: 1.50,  cached: 0.25,  reasoning: 2.25,   cache_creation: 0.50  },
   "gpt-4":                        { input: 2.50,  output: 10.00, cached: 1.25,  reasoning: 15.00,  cache_creation: 2.50  },
   "gpt-4-turbo":                  { input: 10.00, output: 30.00, cached: 5.00,  reasoning: 45.00,  cache_creation: 10.00 },
@@ -269,6 +274,10 @@ export const PROVIDER_PRICING = {
  * First match wins — order matters.
  */
 export const PATTERN_PRICING = [
+  { pattern: "gpt-6-astra*", pricing: MODEL_PRICING["gpt-6-astra"] },
+  { pattern: "gpt-6-sol*", pricing: MODEL_PRICING["gpt-6-sol"] },
+  { pattern: "gpt-6-luna*", pricing: MODEL_PRICING["gpt-6-luna"] },
+  { pattern: "grok-4.7*", pricing: MODEL_PRICING["grok-4.7"] },
   // --- Codex variants ---
   { pattern: "*-codex-xhigh",   pricing: { input: 10.00, output: 40.00, cached: 5.00,  reasoning: 60.00,  cache_creation: 10.00 } },
   { pattern: "*-codex-high",    pricing: { input: 8.00,  output: 32.00, cached: 4.00,  reasoning: 48.00,  cache_creation: 8.00  } },

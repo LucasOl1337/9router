@@ -67,6 +67,7 @@ export default {
     },
   },
   models: [
+    { id: "grok-4.7", name: "Grok 4.7", contextLength: 500000 },
     {
       id: GROK_CLI_MODEL,
       name: "Grok Build",
